@@ -7,6 +7,6 @@ export const bedrockProxy = defineFunction({
   memoryMB: 512,
   environment: {
     // Vision-capable model; override per-request from the UI if needed.
-    MODEL_ID: 'us.anthropic.claude-opus-4-8-v1:0',
+    MODEL_ID: 'us.amazon.nova-2-lite-v1:0',
   },
 });
