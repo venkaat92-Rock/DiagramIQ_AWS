@@ -1,0 +1,23 @@
+{
+  "name": "diagramiq-aws",
+  "version": "1.0.0",
+  "description": "DiagramIQ on AWS — AI Convert (image → BPMN 2.0) with Amplify Hosting + Bedrock",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "sandbox": "ampx sandbox",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@aws-amplify/backend": "^1.16.1",
+    "@aws-amplify/backend-cli": "^1.8.0",
+    "aws-cdk-lib": "^2.189.1",
+    "constructs": "^10.4.2",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0"
+  }
+}

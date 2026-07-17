@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DiagramIQ · AWS</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <h1>DiagramIQ</h1>
+    <span class="sub">AI-powered BPMN 2.0 diagram intelligence</span>
+    <span class="aws">AWS · Amplify + Bedrock</span>
+  </header>
+
+  <div class="controls">
+    <label class="filebtn">⬆ Image
+      <input id="fileInput" type="file" accept="image/*" />
+    </label>
+    <button id="btnConvert" disabled>✨ AI Convert</button>
+    <label>Process name
+      <input id="processName" type="text" placeholder="e.g. Material Master Creation" />
+    </label>
+    <label>Bedrock model
+      <input id="modelId" type="text" value="us.anthropic.claude-opus-4-8-v1:0" />
+    </label>
+    <button id="btnXml">📄 View BPMN XML</button>
+  </div>
+
+  <main>
+    <section id="imgPane" class="pane">
+      <h2>Input image</h2>
+      <div class="hint">Drop a process diagram image here<br />or use ⬆ Image above.</div>
+      <img id="imgPreview" alt="" />
+    </section>
+    <section class="pane">
+      <h2>What the AI understood — review before approving</h2>
+      <div id="svgPane"></div>
+    </section>
+  </main>
+
+  <div class="reviewbar">
+    <div id="stats"></div>
+    <textarea id="feedback" placeholder="Spot a mistake? Describe it here (e.g. 'Validate request belongs to the Standardization team lane'), then press Re-do."></textarea>
+    <div class="actions">
+      <button id="btnRedo" disabled>⟲ Re-do (applies my feedback)</button>
+      <span class="spacer"></span>
+      <button id="btnApprove" disabled>✓ Approve &amp; Download .bpmn</button>
+    </div>
+  </div>
+
+  <div id="status">Loading…</div>
+
+  <dialog id="xmlModal">
+    <h3>BPMN 2.0 XML</h3>
+    <textarea id="xmlOut" readonly></textarea>
+    <div class="actions"><span class="spacer"></span><button id="btnXmlClose">Close</button></div>
+  </dialog>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

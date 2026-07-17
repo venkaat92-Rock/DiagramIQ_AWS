@@ -1,0 +1,18 @@
+version: 1
+backend:
+  phases:
+    build:
+      commands:
+        - npm ci
+        - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
+frontend:
+  phases:
+    build:
+      commands:
+        # Amplify writes amplify_outputs.json during pipeline-deploy; ship it
+        # with the static site so the frontend knows the API endpoint.
+        - cp amplify_outputs.json frontend/amplify_outputs.json
+  artifacts:
+    baseDirectory: frontend
+    files:
+      - '**/*'
