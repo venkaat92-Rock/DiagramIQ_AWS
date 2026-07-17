@@ -64,10 +64,19 @@ amplify.yml                               Amplify build pipeline (backend + stat
    a fallback) in your region (e.g. `us-east-1`).
 3. Wait until status shows **Access granted**.
 
-> The app calls the model through the **Converse API** using the cross-region
-> inference profile id `us.anthropic.claude-opus-4-8-v1:0`. You can change the
-> model per-request in the UI, or change the default in
-> `amplify/functions/bedrock-proxy/resource.ts`.
+> The app calls models through the **Converse API**. The UI has a dropdown of
+> verified vision models (tested in a Genpact AWS account, us-west-2) plus a
+> "Custom model ID…" option for any other inference profile:
+>
+> | Dropdown entry | Inference profile ID | Notes |
+> |---|---|---|
+> | Pixtral Large (Mistral) | `us.mistral.pixtral-large-2502-v1:0` | default — strong on diagrams |
+> | Llama 4 Maverick (Meta) | `us.meta.llama4-maverick-17b-instruct-v1:0` | strong multimodal |
+> | Nova 2 Lite (Amazon) | `us.amazon.nova-2-lite-v1:0` | fast, auto-enabled |
+> | Nova Pro (Amazon) | `us.amazon.nova-pro-v1:0` | baseline |
+> | Custom… | e.g. `us.anthropic.claude-opus-4-7` | best quality; needs the one-time Marketplace enablement (a user with `aws-marketplace:Subscribe` invokes it once, e.g. in the Bedrock playground) |
+>
+> Change the backend default in `amplify/functions/bedrock-proxy/resource.ts`.
 
 ### 2. Deploy with Amplify
 1. AWS Console → **AWS Amplify** → **Create new app** → **GitHub** → authorise

@@ -5,6 +5,32 @@ import { renderSvg } from './svgPreview.js';
 const $ = (id) => document.getElementById(id);
 const state = { apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png' };
 
+/* Model picker: dropdown of verified models + free-text custom ID. */
+function currentModelId() {
+  const sel = $('modelSelect').value;
+  if (sel === '__custom__') return $('modelId').value.trim() || undefined;
+  return sel;
+}
+
+function initModelPicker() {
+  const sel = $('modelSelect');
+  const custom = $('modelId');
+  const saved = localStorage.getItem('diagramiq.model');
+  if (saved) {
+    const opt = [...sel.options].find((o) => o.value === saved);
+    if (opt) { sel.value = saved; }
+    else { sel.value = '__custom__'; custom.value = saved; custom.classList.remove('hidden'); }
+  }
+  sel.addEventListener('change', () => {
+    custom.classList.toggle('hidden', sel.value !== '__custom__');
+    if (sel.value !== '__custom__') localStorage.setItem('diagramiq.model', sel.value);
+    else custom.focus();
+  });
+  custom.addEventListener('change', () => {
+    if (custom.value.trim()) localStorage.setItem('diagramiq.model', custom.value.trim());
+  });
+}
+
 function setStatus(msg, kind = 'info') {
   const el = $('status');
   el.textContent = msg;
@@ -94,7 +120,7 @@ async function aiConvert() {
     const data = await post('/convert', {
       imageBase64: state.imageB64,
       mediaType: state.mediaType,
-      modelId: $('modelId').value.trim() || undefined,
+      modelId: currentModelId(),
     });
     state.model = data.model;
     if ($('processName').value.trim() === '' && state.model.process_name) {
@@ -119,7 +145,7 @@ async function redo() {
     const data = await post('/feedback', {
       model: state.model,
       feedback: fb,
-      modelId: $('modelId').value.trim() || undefined,
+      modelId: currentModelId(),
     });
     state.model = data.model;
     refreshFromModel();
@@ -147,6 +173,7 @@ function approveDownload() {
 /* ---------- wire up -------------------------------------------------------- */
 window.addEventListener('DOMContentLoaded', () => {
   loadOutputs();
+  initModelPicker();
   $('fileInput').addEventListener('change', (e) => acceptImage(e.target.files[0]));
   const drop = $('imgPane');
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });

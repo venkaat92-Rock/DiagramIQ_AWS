@@ -43,7 +43,12 @@ header .aws { margin-left: auto; font-size: 12px; background: #ff9900; color: #1
   padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px;
 }
 #processName { width: 260px; }
-#modelId { width: 320px; font-family: Consolas, monospace; font-size: 12px; }
+#modelSelect {
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 13px; background: #fff; min-width: 220px;
+}
+#modelId { width: 340px; font-family: Consolas, monospace; font-size: 12px; }
+.hidden { display: none; }
 
 button {
   padding: 8px 14px; border: 0; border-radius: 7px; cursor: pointer;
