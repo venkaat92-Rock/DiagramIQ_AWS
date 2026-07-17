@@ -70,11 +70,13 @@ amplify.yml                               Amplify build pipeline (backend + stat
 >
 > | Dropdown entry | Inference profile ID | Notes |
 > |---|---|---|
-> | Pixtral Large (Mistral) | `us.mistral.pixtral-large-2502-v1:0` | default — strong on diagrams |
+> | Claude Haiku 4.5 (Anthropic) — (priority) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | **default** — closest to expectation in testing |
+> | Nova 2 Lite (Amazon) — (priority) | `us.amazon.nova-2-lite-v1:0` | fast, auto-enabled |
+> | Pixtral Large (Mistral) | `us.mistral.pixtral-large-2502-v1:0` | strong on diagrams |
 > | Llama 4 Maverick (Meta) | `us.meta.llama4-maverick-17b-instruct-v1:0` | strong multimodal |
-> | Nova 2 Lite (Amazon) | `us.amazon.nova-2-lite-v1:0` | fast, auto-enabled |
+> | Llama 4 Scout (Meta) | `us.meta.llama4-scout-17b-instruct-v1:0` | lighter Llama 4 |
 > | Nova Pro (Amazon) | `us.amazon.nova-pro-v1:0` | baseline |
-> | Custom… | e.g. `us.anthropic.claude-opus-4-7` | best quality; needs the one-time Marketplace enablement (a user with `aws-marketplace:Subscribe` invokes it once, e.g. in the Bedrock playground) |
+> | Custom… | e.g. `us.anthropic.claude-opus-4-7` | Opus/Sonnet may need the one-time Marketplace enablement (a user with `aws-marketplace:Subscribe` invokes once, e.g. in the Bedrock playground) |
 >
 > Change the backend default in `amplify/functions/bedrock-proxy/resource.ts`.
 
