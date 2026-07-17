@@ -70,13 +70,15 @@ amplify.yml                               Amplify build pipeline (backend + stat
 >
 > | Dropdown entry | Inference profile ID | Notes |
 > |---|---|---|
-> | Claude Haiku 4.5 (Anthropic) — (priority) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | **default** — closest to expectation in testing |
-> | Nova 2 Lite (Amazon) — (priority) | `us.amazon.nova-2-lite-v1:0` | fast, auto-enabled |
+> | Claude Opus 4.5 (Anthropic) — (priority 1) | `us.anthropic.claude-opus-4-5-20251101-v1:0` | **default** — best quality in testing ("fantastic") |
+> | Claude Haiku 4.5 (Anthropic) — (priority 2) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | fast, close to expectation |
+> | Nova 2 Lite (Amazon) — (priority 3) | `us.amazon.nova-2-lite-v1:0` | fast, auto-enabled |
+> | Claude Sonnet 4.5 (Anthropic) | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | strong middle tier |
 > | Pixtral Large (Mistral) | `us.mistral.pixtral-large-2502-v1:0` | strong on diagrams |
 > | Llama 4 Maverick (Meta) | `us.meta.llama4-maverick-17b-instruct-v1:0` | strong multimodal |
 > | Llama 4 Scout (Meta) | `us.meta.llama4-scout-17b-instruct-v1:0` | lighter Llama 4 |
 > | Nova Pro (Amazon) | `us.amazon.nova-pro-v1:0` | baseline |
-> | Custom… | e.g. `us.anthropic.claude-opus-4-7` | Opus/Sonnet may need the one-time Marketplace enablement (a user with `aws-marketplace:Subscribe` invokes once, e.g. in the Bedrock playground) |
+> | Custom… | any inference profile ID | dated `us.…-vN:0` profile form works best |
 >
 > Change the backend default in `amplify/functions/bedrock-proxy/resource.ts`.
 
