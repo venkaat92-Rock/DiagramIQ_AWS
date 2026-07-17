@@ -3,7 +3,9 @@ backend:
   phases:
     build:
       commands:
-        - npm ci
+        # npm install (not `npm ci`): tolerant of lockfiles written by a newer
+        # npm than the Amplify build image ships (npm ci hard-fails on that).
+        - npm install --no-audit --no-fund
         - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
 frontend:
   phases:
