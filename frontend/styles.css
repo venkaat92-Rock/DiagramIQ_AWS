@@ -57,8 +57,10 @@ button {
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 #btnConvert { background: var(--accent); color: #fff; }
 #btnApprove { background: var(--ok); color: #fff; }
-.filebtn {
-  display: inline-block; padding: 8px 14px; background: #274b6d; color: #fff;
+/* label.filebtn (not .filebtn): must out-rank `.controls label`'s dark text
+   color, or the white button text renders invisible on the navy pill. */
+label.filebtn, .controls label.filebtn {
+  display: inline-block; padding: 8px 14px; background: #274b6d; color: #ffffff;
   border-radius: 7px; font-size: 13.5px; font-weight: 600; cursor: pointer;
 }
 .filebtn input { display: none; }
