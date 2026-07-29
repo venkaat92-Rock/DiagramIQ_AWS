@@ -6,6 +6,15 @@ backend:
         # npm install (not `npm ci`): tolerant of lockfiles written by a newer
         # npm than the Amplify build image ships (npm ci hard-fails on that).
         - npm install --no-audit --no-fund
+        # Vendor the Python engine's pure-Python deps into the Lambda asset
+        # before CDK zips it. Targets the Lambda runtime version, not the build
+        # image's. --only-binary + a pure-python-only requirements file means
+        # this never pulls a platform-specific wheel.
+        - >-
+          pip3 install --target amplify/functions/python-analyzer/vendor
+          --upgrade --only-binary=:all: --python-version 3.12
+          --implementation cp --abi none --platform any
+          -r amplify/functions/python-analyzer/requirements.txt
         - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
 frontend:
   phases:

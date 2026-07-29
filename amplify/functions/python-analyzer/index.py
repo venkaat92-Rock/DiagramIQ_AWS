@@ -6,16 +6,27 @@ Windows build has. Every module is stdlib-only, so this stays a zip Lambda with
 no build step.
 
 Routes (all POST, JSON in / JSON out):
-  /analyze   { model }                  -> structural checks on the AI's model JSON
-  /validate  { xml, categories? }       -> BPMN + Signavio best-practice issues
-  /uplift    { xml, processName? }      -> rule-based uplift, Signavio-normalised
-  /visio     { fileBase64, processName? }-> .vsdx/.vsd -> BPMN 2.0 XML
-  /normalize { xml, target? }           -> Signavio normalise, or Celonis-compatible
+  /analyze        { model }                    -> structural checks on the model JSON
+  /validate       { xml, categories? }         -> BPMN + Signavio best-practice issues
+  /uplift         { xml, processName? }        -> rule-based uplift, Signavio-normalised
+  /visio          { fileBase64, processName? } -> .vsdx/.vsd -> BPMN 2.0 XML
+  /normalize      { xml, target? }             -> Signavio normalise / Celonis-compatible
+  /excel-to-bpmn  { fileBase64, processName? } -> Process Discovery .xlsx -> BPMN
+  /bpmn-to-excel  { xml, processName? }        -> BPMN -> editable review .xlsx
+  /patch          { xml, fileBase64 }          -> apply the edited .xlsx back onto the BPMN
+  /uplift-report  { changes, ... }             -> 3-sheet uplift report .xlsx
+
+Files cross the wire base64-encoded and are staged in /tmp, because the ported
+modules are path-based (they were written for a desktop app).
 """
 import base64
 import json
 import os
+import sys
 import tempfile
+
+# Deps vendored by the Amplify build (see amplify.yml + requirements.txt).
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
 
 from diagramiq.bpmn_parser import parse_bpmn_xml
 from diagramiq.bpmn_validator import validate_bpmn
@@ -206,12 +217,110 @@ def route_analyze(body):
     return reply(200, analyse(model))
 
 
+# ── Excel round-trip (Phase 2) ───────────────────────────────────────────────
+
+def _stage(b64, suffix):
+    """Write a base64 payload to /tmp and return its path."""
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp.write(base64.b64decode(b64))
+    tmp.close()
+    return tmp.name
+
+
+def _drop(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def route_excel_to_bpmn(body):
+    """Process Discovery .xlsx -> BPMN 2.0 XML."""
+    from diagramiq.excel_to_bpmn import build_bpmn_from_excel
+
+    b64 = body.get("fileBase64")
+    if not b64:
+        return reply(400, {"error": "fileBase64 is required."})
+    path = _stage(b64, ".xlsx")
+    try:
+        return reply(200, {"xml": build_bpmn_from_excel(path, body.get("processName") or "")})
+    finally:
+        _drop(path)
+
+
+def route_bpmn_to_excel(body):
+    """BPMN -> the editable review .xlsx (step 1 of the uplift workflow)."""
+    from diagramiq.bpmn_to_excel import bpmn_to_process_dict
+    from diagramiq.transcription_to_excel import save_excel_from_ai_response
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    name = body.get("processName") or "Uplifted Process"
+    out = os.path.join(tempfile.gettempdir(), "review.xlsx")
+    try:
+        save_excel_from_ai_response(bpmn_to_process_dict(xml, default_process_name=name), out)
+        with open(out, "rb") as fh:
+            return reply(200, {
+                "fileBase64": base64.b64encode(fh.read()).decode(),
+                "filename": f"{name}.uplift_review.xlsx",
+            })
+    finally:
+        _drop(out)
+
+
+def route_patch(body):
+    """Apply the user's edited review .xlsx back onto the original BPMN."""
+    from diagramiq.bpmn_patcher import patch_bpmn_with_excel
+
+    xml, b64 = body.get("xml"), body.get("fileBase64")
+    if not xml or not b64:
+        return reply(400, {"error": "xml and fileBase64 are required."})
+    path = _stage(b64, ".xlsx")
+    try:
+        patched, changes = patch_bpmn_with_excel(xml, path)
+        return reply(200, {"xml": patched, "changes": changes})
+    finally:
+        _drop(path)
+
+
+def route_uplift_report(body):
+    """The 3-sheet uplift report: changes, BPMN Checklist, Modeller Inputs."""
+    from diagramiq.uplift_report import save_uplift_report
+
+    changes = body.get("changes")
+    if not isinstance(changes, list):
+        return reply(400, {"error": "changes (list) is required."})
+    out = os.path.join(tempfile.gettempdir(), "uplift_report.xlsx")
+    try:
+        save_uplift_report(
+            changes=changes,
+            out_path=out,
+            source_name=body.get("sourceName") or "",
+            output_name=body.get("outputName") or "",
+            compliance_results=body.get("complianceResults"),
+            modeller_inputs=body.get("modellerInputs"),
+            only_sheets=body.get("onlySheets"),
+        )
+        with open(out, "rb") as fh:
+            return reply(200, {
+                "fileBase64": base64.b64encode(fh.read()).decode(),
+                "filename": "uplift_report.xlsx",
+            })
+    finally:
+        _drop(out)
+
+
 ROUTES = {
     "/analyze": route_analyze,
     "/validate": route_validate,
+    "/uplift-report": route_uplift_report,  # before /uplift — endswith matching
     "/uplift": route_uplift,
     "/visio": route_visio,
     "/normalize": route_normalize,
+    "/excel-to-bpmn": route_excel_to_bpmn,
+    "/bpmn-to-excel": route_bpmn_to_excel,
+    "/patch": route_patch,
 }
 
 

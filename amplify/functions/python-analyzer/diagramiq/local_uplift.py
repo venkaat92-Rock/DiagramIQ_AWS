@@ -300,7 +300,7 @@ def _do_uplift(xml_content: str, process_name: str) -> str:
     # imports cleanly into Signavio (single-quoted XML decl, missing i18n
     # namespace, missing BPMNShape per node, etc. all get fixed in one pass).
     try:
-        from signavio_normalize import normalize_for_signavio
+        from .signavio_normalize import normalize_for_signavio
         xml = normalize_for_signavio(xml)
     except Exception:
         # Never let a normaliser bug break a working uplift; fall back to

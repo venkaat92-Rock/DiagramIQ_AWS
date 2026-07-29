@@ -1,0 +1,4 @@
+# Installed into vendor/ by the Amplify backend build (see amplify.yml) and
+# put on sys.path by index.py. Pure-Python wheels only — no binaries — so the
+# function stays a plain zip Lambda.
+openpyxl>=3.1.0

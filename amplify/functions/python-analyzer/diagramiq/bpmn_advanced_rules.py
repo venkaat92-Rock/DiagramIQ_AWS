@@ -195,7 +195,7 @@ def _enforce_verb_at_start(root: ET.Element) -> List[Dict]:
     Names already in good shape are no-ops; only actual changes are logged.
     """
     try:
-        from local_uplift import _verb_object_fix, _BPMN_VERBS, _clean_name
+        from .local_uplift import _verb_object_fix, _BPMN_VERBS, _clean_name
     except ImportError:
         return []
 

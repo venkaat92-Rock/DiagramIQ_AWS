@@ -595,7 +595,7 @@ def build_bpmn_from_visio(file_path: str, process_name: str = "") -> str:
 
     # Signavio-normalise (fabricates all DI shapes/edges, fixes namespaces).
     try:
-        from signavio_normalize import normalize_for_signavio
+        from .signavio_normalize import normalize_for_signavio
         xml = normalize_for_signavio(xml)
     except Exception as exc:   # pragma: no cover - normalize is robust
         print(f"[visio] normalize skipped: {exc}", file=sys.stderr)
