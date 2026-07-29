@@ -54,7 +54,18 @@ const pythonIntegration = new HttpLambdaIntegration(
   'PythonAnalyzerIntegration',
   pythonEngine,
 );
-for (const path of ['/analyze', '/validate', '/uplift', '/visio', '/normalize']) {
+// Keep in step with ROUTES in the function's index.py.
+for (const path of [
+  '/analyze',
+  '/validate',
+  '/uplift',
+  '/visio',
+  '/normalize',
+  '/excel-to-bpmn',
+  '/bpmn-to-excel',
+  '/patch',
+  '/uplift-report',
+]) {
   httpApi.addRoutes({
     path,
     methods: [HttpMethod.POST],
