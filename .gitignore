@@ -5,3 +5,7 @@ frontend/amplify_outputs.json
 dist/
 *.log
 .DS_Store
+
+# Python bytecode (the Lambda asset must stay clean)
+__pycache__/
+*.pyc
