@@ -5,3 +5,10 @@ frontend/amplify_outputs.json
 dist/
 *.log
 .DS_Store
+
+# Python bytecode (the Lambda asset must stay clean)
+__pycache__/
+*.pyc
+
+# Vendored Python deps — built by the Amplify backend phase (amplify.yml)
+amplify/functions/python-analyzer/vendor/
