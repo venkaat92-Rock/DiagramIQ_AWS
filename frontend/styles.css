@@ -104,3 +104,37 @@ main {
 
 dialog { width: min(900px, 92vw); border: 1px solid var(--line); border-radius: 10px; }
 #xmlOut { width: 100%; height: 55vh; font-family: Consolas, monospace; font-size: 12px; }
+
+/* ── Engine bar ────────────────────────────────────────────────────────────
+   Second control row: the ported desktop engine (validate / uplift / AI
+   passes / Excel round-trip). Visually subordinate to the primary row. */
+.controls.engine { background: #f9fafc; gap: 8px; }
+.controls.engine button { font-size: 12.5px; padding: 7px 11px; }
+.controls.engine .spacer { flex: 1; }
+.grouplabel {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; color: #8a97a6;
+}
+label.filebtn.small, .controls label.filebtn.small {
+  padding: 7px 11px; font-size: 12.5px; background: #3d5a78;
+}
+#btnValidate { background: #1d4e79; color: #fff; }
+#btnAiUplift { background: var(--accent); color: #fff; }
+#targetSelect {
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 13px; background: #fff;
+}
+
+/* ── Validation results ───────────────────────────────────────────────── */
+.pane.issues { margin: 0 22px 14px; max-height: 42vh; }
+#issuesSummary { font-weight: 600; text-transform: none; letter-spacing: 0; }
+#issuesTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+#issuesTable th {
+  text-align: left; padding: 6px 8px; border-bottom: 2px solid var(--line);
+  position: sticky; top: 0; background: #fff; color: #45566b;
+}
+#issuesTable td { padding: 5px 8px; border-bottom: 1px solid #eef2f6; vertical-align: top; }
+#issuesTable tr[data-sev="ERROR"] td:first-child { color: var(--err); font-weight: 700; }
+#issuesTable tr[data-sev="WARNING"] td:first-child { color: var(--warn); font-weight: 700; }
+#issuesTable tr[data-sev="INFO"] td:first-child { color: #45566b; }
+#issuesTable td:nth-child(4) { font-family: Consolas, monospace; font-size: 11.5px; color: #45566b; }

@@ -17,6 +17,18 @@
     <label class="filebtn">⬆ Image
       <input id="fileInput" type="file" accept="image/*" />
     </label>
+    <label class="filebtn">⬆ BPMN/XML
+      <input id="bpmnInput" type="file" accept=".bpmn,.xml" />
+    </label>
+    <label class="filebtn">⬆ Excel
+      <input id="excelInput" type="file" accept=".xlsx" />
+    </label>
+    <label class="filebtn">⬆ Visio
+      <input id="visioInput" type="file" accept=".vsdx,.vsd" />
+    </label>
+    <label class="filebtn">⬆ Notes
+      <input id="notesInput" type="file" accept=".txt,.md" />
+    </label>
     <button id="btnConvert" disabled>✨ AI Convert</button>
     <label>Process name
       <input id="processName" type="text" placeholder="e.g. Material Master Creation" />
@@ -36,7 +48,30 @@
     </label>
     <input id="modelId" type="text" class="hidden"
            placeholder="paste any Bedrock inference profile ID (e.g. us.anthropic.claude-opus-4-7)" />
+    <label>Target
+      <select id="targetSelect">
+        <option value="signavio">Signavio / Camunda / bpmn.io</option>
+        <option value="celonis">Celonis (CPM)</option>
+      </select>
+    </label>
     <button id="btnXml">📄 View BPMN XML</button>
+  </div>
+
+  <div class="controls engine">
+    <span class="grouplabel">Engine</span>
+    <button id="btnValidate" disabled>✔ Validate</button>
+    <button id="btnUplift" disabled>⚙ Uplift (rules)</button>
+    <button id="btnAiUplift" disabled>✨ AI Uplift</button>
+    <button id="btnAiNaming" disabled>🔤 Naming</button>
+    <button id="btnAiGateways" disabled>◇ Gateways</button>
+    <button id="btnAiLayout" disabled>⤢ Layout</button>
+    <button id="btnCompliance" disabled>📋 Compliance (76)</button>
+    <span class="spacer"></span>
+    <button id="btnReviewXlsx" disabled>⬇ Review .xlsx</button>
+    <label class="filebtn small">⬆ Apply edited .xlsx
+      <input id="patchInput" type="file" accept=".xlsx" />
+    </label>
+    <button id="btnReport" disabled>⬇ Uplift report</button>
   </div>
 
   <main>
@@ -50,6 +85,14 @@
       <div id="svgPane"></div>
     </section>
   </main>
+
+  <section id="issuesPane" class="pane issues hidden">
+    <h2>Validation <span id="issuesSummary"></span></h2>
+    <table id="issuesTable">
+      <thead><tr><th>Severity</th><th>Source</th><th>Rule</th><th>Element</th><th>Message</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
 
   <div class="reviewbar">
     <div id="stats"></div>
