@@ -1,5 +1,5 @@
 import { defineBackend } from '@aws-amplify/backend';
-import { Stack } from 'aws-cdk-lib';
+import { Duration, Stack } from 'aws-cdk-lib';
 import {
   CorsHttpMethod,
   HttpApi,
@@ -7,6 +7,7 @@ import {
 } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import { Code, Function as LambdaFunction, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { bedrockProxy } from './functions/bedrock-proxy/resource';
 
 const backend = defineBackend({ bedrockProxy });
@@ -34,6 +35,24 @@ const httpApi = new HttpApi(apiStack, 'DiagramIQHttpApi', {
 const integration = new HttpLambdaIntegration('BedrockProxyIntegration', fn);
 httpApi.addRoutes({ path: '/convert', methods: [HttpMethod.POST], integration });
 httpApi.addRoutes({ path: '/feedback', methods: [HttpMethod.POST], integration });
+
+// Python analysis route. Amplify Gen 2's defineFunction is Node-only, so the
+// Python Lambda is declared straight in CDK — same pipeline, same HTTP API.
+// Code.fromAsset ships the folder verbatim: stdlib only, no pip step. For
+// binary deps (pandas, numpy…) build a container image instead.
+const pythonAnalyzer = new LambdaFunction(apiStack, 'PythonAnalyzer', {
+  functionName: 'diagramiq-python-analyzer',
+  runtime: Runtime.PYTHON_3_12,
+  handler: 'index.handler',
+  code: Code.fromAsset('amplify/functions/python-analyzer'),
+  timeout: Duration.seconds(60),
+  memorySize: 512,
+});
+httpApi.addRoutes({
+  path: '/analyze',
+  methods: [HttpMethod.POST],
+  integration: new HttpLambdaIntegration('PythonAnalyzerIntegration', pythonAnalyzer),
+});
 
 // Expose the endpoint to the frontend via amplify_outputs.json.
 backend.addOutput({
