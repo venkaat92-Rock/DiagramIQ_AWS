@@ -39,17 +39,30 @@ httpApi.addRoutes({ path: '/feedback', methods: [HttpMethod.POST], integration }
 // Python engine Lambda. Amplify Gen 2's defineFunction is Node-only, so this
 // is declared straight in CDK — same pipeline, same HTTP API. It carries the
 // desktop app's BPMN engine (diagramiq/, ported verbatim from Diagram.IQ
-// src/). Those modules are stdlib-only, so Code.fromAsset ships the folder as
-// is: no pip step, no layer. Anything needing binary wheels would want a
-// container image instead.
+// src/): the rule engines are stdlib-only, the Excel ones use openpyxl (pip
+// -installed into vendor/ by amplify.yml), and the AI passes go through
+// Bedrock via boto3, which ships with the runtime.
 const pythonEngine = new LambdaFunction(apiStack, 'PythonAnalyzer', {
   functionName: 'diagramiq-python-analyzer',
   runtime: Runtime.PYTHON_3_12,
   handler: 'index.handler',
   code: Code.fromAsset('amplify/functions/python-analyzer'),
-  timeout: Duration.seconds(60),
-  memorySize: 1024, // layout/routing passes over large diagrams
+  // The AI passes are long: the compliance audit reasons over all 76 Auspost
+  // rules, and layout cleanup ships the whole diagram both ways.
+  timeout: Duration.seconds(300),
+  memorySize: 1024,
+  environment: {
+    MODEL_ID: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+  },
 });
+// Same Bedrock grant the Node proxy gets — the AI passes call Converse
+// directly rather than hopping through it.
+pythonEngine.addToRolePolicy(
+  new PolicyStatement({
+    actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+    resources: ['*'],
+  }),
+);
 const pythonIntegration = new HttpLambdaIntegration(
   'PythonAnalyzerIntegration',
   pythonEngine,
@@ -65,6 +78,13 @@ for (const path of [
   '/bpmn-to-excel',
   '/patch',
   '/uplift-report',
+  '/ai-uplift',
+  '/ai-gateways',
+  '/ai-layout',
+  '/ai-naming',
+  '/ai-compliance',
+  '/ai-modeller-inputs',
+  '/notes',
 ]) {
   httpApi.addRoutes({
     path,

@@ -311,6 +311,126 @@ def route_uplift_report(body):
         _drop(out)
 
 
+# ── AI passes on Bedrock (Phase 3) ───────────────────────────────────────────
+#
+# The ported modules take (provider, api_key). In AWS the Lambda's IAM role
+# authorises Bedrock, so provider is always "bedrock" and the key is unused —
+# the arguments stay in place to keep these files diffable against upstream.
+
+def route_ai_uplift(body):
+    """AI uplift of a whole BPMN, with the deterministic orphan pre-pass."""
+    from diagramiq.ai_uplift import uplift_with_streaming
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+
+    out, log = {}, []
+    uplift_with_streaming(
+        xml_content=xml,
+        issues=validate_bpmn(parse_bpmn_xml(xml)),
+        process_name=body.get("processName") or "Process",
+        provider="bedrock",
+        api_key=None,
+        signavio_categories=body.get("signavioCategories") or "",
+        on_chunk=log.append,
+        on_complete=lambda r: out.__setitem__("xml", r),
+        on_error=lambda m: out.__setitem__("error", m),
+    )
+    if "error" in out:
+        return reply(502, {"error": out["error"]})
+    return reply(200, {"xml": out.get("xml", ""), "log": "".join(log)})
+
+
+def route_ai_gateways(body):
+    """Suggest gateways the diagram is missing."""
+    from diagramiq.ai_gateway_insert import suggest_gateways
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    return reply(200, {"suggestions": suggest_gateways(xml, "bedrock", "")})
+
+
+def route_ai_layout(body):
+    """Waypoint-only layout cleanup (shape moves are rejected upstream)."""
+    from diagramiq.ai_layout_cleanup import clean_layout_with_ai
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    return reply(200, {"xml": clean_layout_with_ai(xml, "bedrock", "")})
+
+
+def route_ai_naming(body):
+    """Verb-first naming review over task names."""
+    from diagramiq.ai_naming_check import check_task_names_with_ai
+
+    names = body.get("taskNames")
+    if not isinstance(names, dict):
+        return reply(400, {"error": "taskNames (object of id -> name) is required."})
+    return reply(200, {"fixes": check_task_names_with_ai(names, "bedrock", "")})
+
+
+def route_ai_compliance(body):
+    """Audit against the 76 Auspost rules — powers the BPMN Checklist sheet."""
+    from diagramiq.ai_compliance_check import check_compliance_with_ai
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    return reply(200, {"results": check_compliance_with_ai(xml, "bedrock", "")})
+
+
+def route_ai_modeller_inputs(body):
+    """Semantic gaps only a process expert can fill."""
+    from diagramiq.ai_modeller_inputs import get_modeller_inputs
+
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    return reply(200, {"inputs": get_modeller_inputs(xml, "bedrock", "")})
+
+
+def route_notes(body):
+    """Transcript text -> Process Discovery .xlsx (the ⬆ Notes flow)."""
+    from diagramiq.transcription_to_excel import (
+        _parse_ai_json,
+        build_excel_from_transcription,
+        save_excel_from_ai_response,
+    )
+
+    text = body.get("text")
+    if not text:
+        return reply(400, {"error": "text is required."})
+    name = body.get("processName") or "Discovered Process"
+
+    out = {}
+    build_excel_from_transcription(
+        text=text,
+        process_name=name,
+        provider="bedrock",
+        api_key="",
+        on_complete=lambda raw: out.__setitem__("raw", raw),
+        on_error=lambda m: out.__setitem__("error", m),
+    )
+    if "error" in out:
+        return reply(502, {"error": out["error"]})
+
+    parsed = _parse_ai_json(out.get("raw", ""))
+    path = os.path.join(tempfile.gettempdir(), "discovery.xlsx")
+    try:
+        save_excel_from_ai_response(parsed, path)
+        with open(path, "rb") as fh:
+            return reply(200, {
+                "model": parsed,
+                "fileBase64": base64.b64encode(fh.read()).decode(),
+                "filename": f"{name}.discovery.xlsx",
+            })
+    finally:
+        _drop(path)
+
+
 ROUTES = {
     "/analyze": route_analyze,
     "/validate": route_validate,
@@ -321,6 +441,13 @@ ROUTES = {
     "/excel-to-bpmn": route_excel_to_bpmn,
     "/bpmn-to-excel": route_bpmn_to_excel,
     "/patch": route_patch,
+    "/ai-uplift": route_ai_uplift,
+    "/ai-gateways": route_ai_gateways,
+    "/ai-layout": route_ai_layout,
+    "/ai-naming": route_ai_naming,
+    "/ai-compliance": route_ai_compliance,
+    "/ai-modeller-inputs": route_ai_modeller_inputs,
+    "/notes": route_notes,
 }
 
 

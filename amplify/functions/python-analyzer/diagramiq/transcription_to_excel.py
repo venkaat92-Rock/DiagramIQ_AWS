@@ -365,6 +365,29 @@ def _handle_error(exc: Exception, provider: str,
         on_error(msg)
 
 
+def _call_bedrock(
+    text: str, process_name: str, api_key: str,
+    on_chunk: Optional[Callable[[str], None]],
+    on_complete: Optional[Callable[[str], None]],
+    on_error: Optional[Callable[[str], None]],
+) -> None:
+    """AWS port. Keeps the 32000-token ceiling — real transcripts truncate
+    below it and the recovery parser then has malformed JSON to work with."""
+    try:
+        from .bedrock_provider import call_bedrock
+        out = call_bedrock(
+            TRANSCRIPTION_SYSTEM,
+            _build_user_message(text, process_name),
+            max_tokens=32000,
+        )
+        if on_chunk:
+            on_chunk(out)
+        if on_complete:
+            on_complete(out)
+    except Exception as exc:
+        _handle_error(exc, "Bedrock", on_error)
+
+
 def _call_anthropic(
     text: str, process_name: str, api_key: str,
     on_chunk: Optional[Callable[[str], None]],
@@ -496,7 +519,9 @@ def build_excel_from_transcription(
             )
         return
 
-    if provider == "anthropic":
+    if provider == "bedrock":
+        _call_bedrock(text, process_name, "", on_chunk, on_complete, on_error)
+    elif provider == "anthropic":
         _call_anthropic(text, process_name, api_key, on_chunk, on_complete, on_error)
     elif provider == "gemini":
         _call_gemini(text, process_name, api_key, on_chunk, on_complete, on_error)
