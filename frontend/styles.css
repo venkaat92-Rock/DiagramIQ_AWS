@@ -125,16 +125,80 @@ label.filebtn.small, .controls label.filebtn.small {
   font-size: 13px; background: #fff;
 }
 
-/* ── Validation results ───────────────────────────────────────────────── */
-.pane.issues { margin: 0 22px 14px; max-height: 42vh; }
-#issuesSummary { font-weight: 600; text-transform: none; letter-spacing: 0; }
-#issuesTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-#issuesTable th {
-  text-align: left; padding: 6px 8px; border-bottom: 2px solid var(--line);
-  position: sticky; top: 0; background: #fff; color: #45566b;
+/* ── Modal sheets ──────────────────────────────────────────────────────────
+   Review grid and reports open as sheets rather than pushing the page around,
+   so the diagram stays where the reviewer left it. */
+dialog.sheet {
+  width: min(1180px, 94vw); max-height: 88vh; padding: 0;
+  border: 0; border-radius: 12px; box-shadow: 0 18px 48px rgba(10, 25, 45, 0.28);
+  overflow: hidden;
 }
-#issuesTable td { padding: 5px 8px; border-bottom: 1px solid #eef2f6; vertical-align: top; }
-#issuesTable tr[data-sev="ERROR"] td:first-child { color: var(--err); font-weight: 700; }
-#issuesTable tr[data-sev="WARNING"] td:first-child { color: var(--warn); font-weight: 700; }
-#issuesTable tr[data-sev="INFO"] td:first-child { color: #45566b; }
-#issuesTable td:nth-child(4) { font-family: Consolas, monospace; font-size: 11.5px; color: #45566b; }
+/* Scoped to [open]: a bare `display: flex` outranks the UA's `display: none`
+   for a closed dialog, which leaves the sheet rendered on the page. */
+dialog.sheet[open] { display: flex; flex-direction: column; }
+dialog.sheet::backdrop { background: rgba(12, 26, 42, 0.45); }
+dialog.sheet header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 16px; background: var(--hdr); color: #fff;
+}
+dialog.sheet header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.sheet-actions { margin-left: auto; display: flex; gap: 8px; }
+dialog.sheet .sheet-body { padding: 14px 16px; overflow: auto; flex: 1; }
+dialog.sheet footer {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 16px; border-top: 1px solid var(--line); background: #fafbfc;
+}
+dialog.sheet footer .spacer { flex: 1; }
+
+button.ghost {
+  background: rgba(255, 255, 255, 0.14); color: #fff; font-weight: 600;
+  padding: 7px 12px; font-size: 12.5px;
+}
+footer button.ghost { background: #e6ebf1; color: var(--ink); }
+button.ghost.icon { padding: 7px 10px; }
+button.ghost.small { background: #e6ebf1; color: var(--ink); margin-top: 10px; }
+#btnApproveBuild { background: var(--ok); color: #fff; }
+.muted { color: #7d8b9a; font-size: 12.5px; }
+
+/* Review grid */
+.meta-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px; margin-bottom: 14px;
+}
+.meta-grid label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 11.5px; color: #45566b; font-weight: 600;
+}
+.meta-grid input {
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  font: inherit; font-size: 13px; font-weight: 400;
+}
+#revTable, #reportTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+#revTable th, #reportTable th {
+  text-align: left; padding: 7px 8px; border-bottom: 2px solid var(--line);
+  color: #45566b; font-size: 11.5px; position: sticky; top: 0; background: #fff;
+}
+#revTable td, #reportTable td {
+  padding: 3px 4px; border-bottom: 1px solid #eef2f6; vertical-align: top;
+}
+#revTable td.num { padding: 8px; color: #8a97a6; width: 30px; }
+#revTable textarea {
+  width: 100%; min-height: 34px; border: 1px solid transparent; border-radius: 5px;
+  padding: 5px 6px; font: inherit; font-size: 12.5px; resize: vertical; background: #fbfcfd;
+}
+#revTable textarea:focus { border-color: var(--accent); outline: none; background: #fff; }
+#revTable .del {
+  background: none; color: #b0342a; padding: 4px 7px; font-size: 14px; font-weight: 700;
+}
+
+/* Report */
+.summary { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.summary .chip {
+  padding: 6px 11px; border-radius: 14px; font-size: 12.5px; font-weight: 600;
+  background: #eef2f6; color: var(--ink);
+}
+.summary .chip.err { background: #fbe6e4; color: var(--err); }
+.summary .chip.warn { background: #fdf1d8; color: var(--warn); }
+#reportTable tr[data-sev="ERROR"] td:first-child { color: var(--err); font-weight: 700; }
+#reportTable tr[data-sev="WARNING"] td:first-child { color: var(--warn); font-weight: 700; }
+#reportTable td:nth-child(4) { font-family: Consolas, monospace; font-size: 11.5px; }

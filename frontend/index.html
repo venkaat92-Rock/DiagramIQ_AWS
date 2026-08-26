@@ -27,7 +27,7 @@
       <input id="visioInput" type="file" accept=".vsdx,.vsd" />
     </label>
     <label class="filebtn">⬆ Notes
-      <input id="notesInput" type="file" accept=".txt,.md" />
+      <input id="notesInput" type="file" accept=".txt,.md,.docx,.pdf" />
     </label>
     <button id="btnConvert" disabled>✨ AI Convert</button>
     <label>Process name
@@ -86,13 +86,6 @@
     </section>
   </main>
 
-  <section id="issuesPane" class="pane issues hidden">
-    <h2>Validation <span id="issuesSummary"></span></h2>
-    <table id="issuesTable">
-      <thead><tr><th>Severity</th><th>Source</th><th>Rule</th><th>Element</th><th>Message</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
 
   <div class="reviewbar">
     <div id="stats"></div>
@@ -105,6 +98,60 @@
   </div>
 
   <div id="status">Loading…</div>
+
+
+  <dialog id="reviewModal" class="sheet">
+    <header>
+      <h3 id="reviewTitle">Review the extracted process</h3>
+      <div class="sheet-actions">
+        <button id="btnExportXlsx" class="ghost">⬇ Export as Excel</button>
+        <button id="btnReviewClose" class="ghost icon" aria-label="Close">✕</button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <div class="meta-grid">
+        <label>Process name<input id="revName" type="text" /></label>
+        <label>Trigger event<input id="revTrigger" type="text" /></label>
+        <label>Successful outcome<input id="revSuccess" type="text" /></label>
+        <label>Unsuccessful outcome<input id="revFail" type="text" /></label>
+      </div>
+      <table id="revTable">
+        <thead><tr>
+          <th>#</th><th>Activity (what)</th><th>Description (how)</th>
+          <th>Participant (who)</th><th>IT systems</th><th>Dependency</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <button id="btnAddRow" class="ghost small">+ Add step</button>
+    </div>
+    <footer>
+      <span id="revCount" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="btnReviewCancel" class="ghost">Cancel</button>
+      <button id="btnApproveBuild">✓ Approve &amp; build BPMN</button>
+    </footer>
+  </dialog>
+
+  <dialog id="reportModal" class="sheet">
+    <header>
+      <h3 id="reportTitle">Validation report</h3>
+      <div class="sheet-actions">
+        <button id="btnReportDownload" class="ghost">⬇ Download</button>
+        <button id="btnReportClose" class="ghost icon" aria-label="Close">✕</button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <div id="reportSummary" class="summary"></div>
+      <table id="reportTable">
+        <thead><tr><th>Severity</th><th>Source</th><th>Rule</th><th>Element</th><th>Message</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <footer>
+      <span class="spacer"></span>
+      <button id="btnReportOk">Close</button>
+    </footer>
+  </dialog>
 
   <dialog id="xmlModal">
     <h3>BPMN 2.0 XML</h3>

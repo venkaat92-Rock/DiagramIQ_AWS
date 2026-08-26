@@ -7,7 +7,7 @@ const state = {
   apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png',
   // Engine state. `xml` is the working BPMN once anything produces one;
   // `changes` accumulates the patcher's change log for the uplift report.
-  reviewXlsx: '', changes: [],
+  reviewXlsx: '', changes: [], discovery: null, lastReport: null,
 };
 
 /* Model picker: dropdown of verified models + free-text custom ID. */
@@ -115,8 +115,10 @@ function fileToB64(file) {
   });
 }
 
+const TEXT_MIMES = ['application/xml', 'text/csv', 'text/plain'];
 function download(bytesOrText, filename, mime) {
-  const blob = typeof bytesOrText === 'string' && mime !== 'application/xml'
+  // Base64 payloads come back from the API; text we build in the browser.
+  const blob = typeof bytesOrText === 'string' && !TEXT_MIMES.includes(mime)
     ? new Blob([Uint8Array.from(atob(bytesOrText), (c) => c.charCodeAt(0))], { type: mime })
     : new Blob([bytesOrText], { type: mime });
   const a = document.createElement('a');
@@ -126,34 +128,67 @@ function download(bytesOrText, filename, mime) {
   URL.revokeObjectURL(a.href);
 }
 
-/** Adopt a BPMN XML as the working document (from upload, uplift, or patch). */
-function setXml(xml, note) {
+/** Adopt a BPMN as the working document, and render what it contains.
+    Every XML-producing route returns `model`, so the preview fills in for
+    Excel, Visio and uploads — not only the image path. */
+function setXml(xml, note, model) {
   state.xml = xml;
   $('xmlOut').value = xml;
+  if (model && model.nodes && model.nodes.length) {
+    state.model = model;
+    try {
+      refreshFromModel();
+    } catch (e) {
+      setStatus(`Preview could not be drawn: ${e.message}`, 'warn');
+    }
+  }
   for (const id of ENGINE_BTNS) $(id).disabled = !xml;
   $('btnApprove').disabled = !xml;
   if (note) setStatus(note);
 }
 
-function renderIssues(payload) {
-  const pane = $('issuesPane');
-  const tbody = $('issuesTable').querySelector('tbody');
+/** Show a validation or compliance report in a sheet, with a download. */
+function showReport(title, payload, csvRows) {
+  state.lastReport = { title, rows: csvRows };
+  $('reportTitle').textContent = title;
+
+  const { summary = {} } = payload;
+  const chips = [];
+  if (summary.errors !== undefined) {
+    chips.push(['err', `${summary.errors} errors`]);
+    chips.push(['warn', `${summary.warnings} warnings`]);
+    chips.push(['', `${summary.info} info`]);
+  }
+  $('reportSummary').innerHTML = '';
+  for (const [cls, text] of chips) {
+    const el = document.createElement('span');
+    el.className = `chip ${cls}`.trim();
+    el.textContent = text;
+    $('reportSummary').appendChild(el);
+  }
+
+  const tbody = $('reportTable').querySelector('tbody');
   tbody.innerHTML = '';
-  const { issues = [], summary = {} } = payload;
-  $('issuesSummary').textContent =
-    `— ${summary.errors || 0} errors · ${summary.warnings || 0} warnings · ${summary.info || 0} info`;
-  for (const i of issues) {
+  for (const r of csvRows.slice(1)) {
     const tr = document.createElement('tr');
-    tr.dataset.sev = i.severity;
-    for (const cell of [i.severity, i.source, i.rule_id, i.element_name || i.element_id || '—', i.message]) {
+    tr.dataset.sev = r[0];
+    for (const cell of r) {
       const td = document.createElement('td');
       td.textContent = cell;
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
   }
-  pane.classList.toggle('hidden', issues.length === 0);
-  if (!issues.length) setStatus('Validation passed — no issues found.');
+  $('reportModal').showModal();
+}
+
+function downloadReport() {
+  if (!state.lastReport) return;
+  const csv = state.lastReport.rows
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const name = state.lastReport.title.toLowerCase().replace(/[^\w]+/g, '_');
+  download(csv, `${name}.csv`, 'text/csv');
 }
 
 /** Run an engine call with busy state and uniform error reporting. */
@@ -186,8 +221,11 @@ function refreshFromModel() {
   $('stats').textContent =
     `Understood:  ${stats.lanes} lanes · ${stats.tasks} tasks · ${stats.gateways} gateways · ${stats.events} events · ${stats.flows} connections`;
   $('btnRedo').disabled = false;
-  // Hands the freshly built XML to the engine bar as the working document.
-  setXml(xml);
+  // Adopt the XML directly: we are already inside the preview path.
+  state.xml = xml;
+  $('xmlOut').value = xml;
+  for (const id of ENGINE_BTNS) $(id).disabled = !xml;
+  $('btnApprove').disabled = !xml;
 }
 
 async function aiConvert() {
@@ -235,7 +273,116 @@ async function redo() {
   }
 }
 
+
+/* ---------- review grid (the ⬆ Notes / ⬆ Excel popup) ---------------------- */
+
+const REV_COLS = ['activity', 'description', 'participant', 'it_systems', 'dependency'];
+
+/** Draw one editable row. Fields not shown in the grid ride along untouched. */
+function revRow(step, i) {
+  const tr = document.createElement('tr');
+  const num = document.createElement('td');
+  num.className = 'num';
+  num.textContent = i + 1;
+  tr.appendChild(num);
+
+  for (const key of REV_COLS) {
+    const td = document.createElement('td');
+    const ta = document.createElement('textarea');
+    ta.value = step[key] || '';
+    ta.dataset.key = key;
+    ta.rows = 1;
+    td.appendChild(ta);
+    tr.appendChild(td);
+  }
+
+  const del = document.createElement('td');
+  const btn = document.createElement('button');
+  btn.className = 'del';
+  btn.textContent = '×';
+  btn.title = 'Remove this step';
+  btn.addEventListener('click', () => { tr.remove(); renumberRows(); });
+  del.appendChild(btn);
+  tr.appendChild(del);
+
+  // Keep the untouched fields (documents, templates, frequency, bpmn_id) so the
+  // round-trip back to Excel does not silently drop them.
+  tr._extra = { ...step };
+  return tr;
+}
+
+function renumberRows() {
+  const rows = [...$('revTable').querySelectorAll('tbody tr')];
+  rows.forEach((tr, i) => { tr.querySelector('td.num').textContent = i + 1; });
+  $('revCount').textContent = `${rows.length} step${rows.length === 1 ? '' : 's'}`;
+}
+
+/** Read the grid back into a discovery object. */
+function readReview() {
+  const steps = [...$('revTable').querySelectorAll('tbody tr')].map((tr) => {
+    const step = { ...(tr._extra || {}) };
+    for (const ta of tr.querySelectorAll('textarea')) step[ta.dataset.key] = ta.value.trim();
+    return step;
+  }).filter((st) => Object.values(st).some((v) => String(v || '').trim()));
+
+  return {
+    ...(state.discovery || {}),
+    process_name: $('revName').value.trim(),
+    trigger_event: $('revTrigger').value.trim(),
+    successful_outcome: $('revSuccess').value.trim(),
+    unsuccessful_outcome: $('revFail').value.trim(),
+    steps,
+  };
+}
+
+function openReview(discovery, title) {
+  state.discovery = discovery;
+  $('reviewTitle').textContent = title || 'Review the extracted process';
+  $('revName').value = discovery.process_name || '';
+  $('revTrigger').value = discovery.trigger_event || '';
+  $('revSuccess').value = discovery.successful_outcome || '';
+  $('revFail').value = discovery.unsuccessful_outcome || '';
+
+  const tbody = $('revTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  (discovery.steps || []).forEach((st, i) => tbody.appendChild(revRow(st, i)));
+  renumberRows();
+  $('reviewModal').showModal();
+}
+
+async function exportReviewXlsx() {
+  const discovery = readReview();
+  try {
+    const d = await post('/discovery-xlsx', { discovery, processName: discovery.process_name });
+    download(d.fileBase64, d.filename, XLSX_MIME);
+  } catch (e) {
+    setStatus(`Export failed: ${e.message}`, 'error');
+  }
+}
+
+/** Approve: turn the edited grid into BPMN and render it. */
+async function approveReview() {
+  const discovery = readReview();
+  if (!discovery.steps.length) { setStatus('Add at least one step before approving.', 'error'); return; }
+  $('reviewModal').close();
+  setBusy(true);
+  setStatus('Building BPMN from the approved steps…');
+  try {
+    const d = await post('/discovery-to-bpmn', {
+      discovery, processName: discovery.process_name,
+    });
+    state.discovery = discovery;
+    state.reviewXlsx = d.fileBase64 || '';
+    setXml(d.xml, `BPMN built from ${discovery.steps.length} approved step(s).`, d.model);
+  } catch (e) {
+    setStatus(`Could not build the BPMN: ${e.message}`, 'error');
+  } finally { setBusy(false); }
+}
+
 /* ---------- engine actions ------------------------------------------------- */
+
+const XLSX_MIME =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const procName = () => $('processName').value.trim();
 
@@ -243,8 +390,15 @@ async function acceptBpmnFile(file) {
   if (!file) return;
   setBusy(true);
   try {
-    setXml(await file.text(), `Loaded ${file.name}. Validate or uplift it.`);
+    const xml = await file.text();
+    let model = null;
+    try {
+      ({ model } = await post('/model', { xml }));
+    } catch { /* preview is a bonus; the BPMN is usable without it */ }
+    setXml(xml, `Loaded ${file.name}. Validate or uplift it.`, model);
     state.changes = [];
+  } catch (e) {
+    setStatus(`Could not load ${file.name}: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
 
@@ -258,47 +412,74 @@ async function acceptEngineFile(file, route, label) {
       filename: file.name,
       processName: procName(),
     });
-    setXml(data.xml, `${label} done — ${file.name} converted. Review, then Approve.`);
+    setXml(data.xml, `${label} done — ${file.name} converted. Review, then Approve.`, data.model);
     state.changes = [];
   } catch (e) {
     setStatus(`${label} failed: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
 
+/** ⬆ Notes — .txt, .md, .docx or .pdf. The file is read server-side, so Word
+    and PDF behave exactly like plain text. */
+/** ⬆ Excel — a Process Discovery workbook opens in the same editable grid. */
+async function acceptExcel(file) {
+  if (!file) return;
+  setBusy(true);
+  setStatus(`Reading ${file.name}…`);
+  try {
+    const { discovery } = await post('/excel-to-discovery', {
+      fileBase64: await fileToB64(file), filename: file.name,
+    });
+    openReview(discovery || {}, `Review — ${file.name}`);
+    setStatus('Review and edit the steps, then Approve to build the BPMN.');
+  } catch (e) {
+    setStatus(`Excel upload failed: ${e.message}`, 'error');
+  } finally { setBusy(false); }
+}
+
 async function acceptNotes(file) {
   if (!file) return;
   setBusy(true);
-  setStatus('AI is reading the notes… (10–60s)');
+  setStatus(`AI is reading ${file.name}… (10–60s)`);
   try {
-    const data = await post('/notes', { text: await file.text(), processName: procName() });
-    state.reviewXlsx = data.fileBase64;
-    download(data.fileBase64, data.filename,
-             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    $('btnReviewXlsx').disabled = false;
-    setStatus(`Process Discovery Excel downloaded (${data.filename}). ` +
-              'Edit it, then re-upload via ⬆ Excel to build the BPMN.');
+    const data = await post('/notes', {
+      fileBase64: await fileToB64(file),
+      filename: file.name,
+      processName: procName(),
+    });
+    state.reviewXlsx = data.fileBase64 || '';
+    openReview(data.discovery || {}, `Review — ${file.name}`);
+    setStatus('Review and edit the steps, then Approve to build the BPMN.');
   } catch (e) {
     setStatus(`Notes analysis failed: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
 
 const validate = () => engine('Validating', async () => {
-  renderIssues(await post('/validate', { xml: state.xml }));
+  const payload = await post('/validate', { xml: state.xml });
+  const rows = [['Severity', 'Source', 'Rule', 'Element', 'Message']];
+  for (const i of payload.issues || []) {
+    rows.push([i.severity, i.source, i.rule_id, i.element_name || i.element_id || '—', i.message]);
+  }
+  if (rows.length === 1) { setStatus('Validation passed — no issues found.'); return; }
+  showReport('Validation report', payload, rows);
+  const { errors = 0, warnings = 0 } = payload.summary || {};
+  setStatus(`Validation: ${errors} errors, ${warnings} warnings.`);
 });
 
 const uplift = () => engine('Applying rule-based uplift', async () => {
   const d = await post('/uplift', { xml: state.xml, processName: procName() });
-  setXml(d.xml, 'Rule-based uplift applied. Validate again to see what changed.');
+  setXml(d.xml, 'Rule-based uplift applied. Validate again to see what changed.', d.model);
 });
 
 const aiUplift = () => engine('AI uplift', async () => {
   const d = await post('/ai-uplift', { xml: state.xml, processName: procName() });
-  setXml(d.xml, 'AI uplift applied. Validate again to see what changed.');
+  setXml(d.xml, 'AI uplift applied. Validate again to see what changed.', d.model);
 });
 
 const aiLayout = () => engine('Cleaning layout', async () => {
   const d = await post('/ai-layout', { xml: state.xml });
-  setXml(d.xml, 'Layout cleaned (waypoints only).');
+  setXml(d.xml, 'Layout cleaned (waypoints only).', d.model);
 });
 
 const aiNaming = () => engine('Reviewing names', async () => {
@@ -333,19 +514,25 @@ const compliance = () => engine('Auditing against the 76 Auspost rules', async (
   const { results } = await post('/ai-compliance', { xml: state.xml });
   const rows = Object.entries(results || {});
   if (!rows.length) { setStatus('Compliance audit returned no verdicts.', 'warn'); return; }
-  const tally = rows.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
   state.complianceResults = results;
   $('btnReport').disabled = false;
-  setStatus('Compliance: ' + Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(' · ') +
-            ' — download the uplift report for the full checklist.');
+  const tally = rows.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
+  const table = [['Status', 'Rule ID', 'Notes']];
+  for (const [rid, v] of rows) table.push([v.status, rid, v.notes || '']);
+  showReport('Quality & compliance report',
+    { summary: { errors: tally['Not Verified'] || 0, warnings: tally.Pending || 0,
+                 info: tally.Verified || 0 } }, table);
+  setStatus('Compliance: ' + Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(' · '));
 });
 
-const reviewXlsx = () => engine('Building the review spreadsheet', async () => {
+const reviewXlsx = () => engine('Building the review sheet', async () => {
   const d = await post('/bpmn-to-excel', { xml: state.xml, processName: procName() });
   state.reviewXlsx = d.fileBase64;
-  download(d.fileBase64, d.filename,
-           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  setStatus(`${d.filename} downloaded. Edit it, then use “⬆ Apply edited .xlsx”.`);
+  // Read it straight back into the grid so the reviewer edits in place; the
+  // sheet is still one click away via Export.
+  const b64 = d.fileBase64;
+  const { discovery } = await post('/excel-to-discovery', { fileBase64: b64 });
+  openReview(discovery || {}, 'Review the current diagram');
 });
 
 async function applyPatch(file) {
@@ -354,7 +541,7 @@ async function applyPatch(file) {
     const d = await post('/patch', { xml: state.xml, fileBase64: await fileToB64(file) });
     state.changes = d.changes || [];
     $('btnReport').disabled = state.changes.length === 0;
-    setXml(d.xml, `Applied ${state.changes.length} change(s) from ${file.name}.`);
+    setXml(d.xml, `Applied ${state.changes.length} change(s) from ${file.name}.`, d.model);
   });
 }
 
@@ -365,8 +552,7 @@ const upliftReport = () => engine('Building the uplift report', async () => {
     outputName: `${procName() || 'process'}.bpmn`,
     complianceResults: state.complianceResults || null,
   });
-  download(d.fileBase64, d.filename,
-           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  download(d.fileBase64, d.filename, XLSX_MIME);
   setStatus(`${d.filename} downloaded.`);
 });
 
@@ -419,8 +605,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // ---- engine: alternative inputs ----
   $('bpmnInput').addEventListener('change', (e) => acceptBpmnFile(e.target.files[0]));
-  $('excelInput').addEventListener('change',
-    (e) => acceptEngineFile(e.target.files[0], '/excel-to-bpmn', 'Excel → BPMN'));
+  $('excelInput').addEventListener('change', (e) => acceptExcel(e.target.files[0]));
   $('visioInput').addEventListener('change',
     (e) => acceptEngineFile(e.target.files[0], '/visio', 'Visio → BPMN'));
   $('notesInput').addEventListener('change', (e) => acceptNotes(e.target.files[0]));
@@ -436,4 +621,20 @@ window.addEventListener('DOMContentLoaded', () => {
   $('btnReviewXlsx').addEventListener('click', reviewXlsx);
   $('patchInput').addEventListener('change', (e) => applyPatch(e.target.files[0]));
   $('btnReport').addEventListener('click', upliftReport);
+
+  // ---- review sheet ----
+  $('btnAddRow').addEventListener('click', () => {
+    const tbody = $('revTable').querySelector('tbody');
+    tbody.appendChild(revRow({}, tbody.children.length));
+    renumberRows();
+  });
+  $('btnExportXlsx').addEventListener('click', exportReviewXlsx);
+  $('btnApproveBuild').addEventListener('click', approveReview);
+  $('btnReviewClose').addEventListener('click', () => $('reviewModal').close());
+  $('btnReviewCancel').addEventListener('click', () => $('reviewModal').close());
+
+  // ---- report sheet ----
+  $('btnReportDownload').addEventListener('click', downloadReport);
+  $('btnReportClose').addEventListener('click', () => $('reportModal').close());
+  $('btnReportOk').addEventListener('click', () => $('reportModal').close());
 });
