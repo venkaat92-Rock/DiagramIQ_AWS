@@ -65,7 +65,7 @@
     <button id="btnAiNaming" disabled>🔤 Naming</button>
     <button id="btnAiGateways" disabled>◇ Gateways</button>
     <button id="btnAiLayout" disabled>⤢ Layout</button>
-    <button id="btnCompliance" disabled>📋 Compliance (76)</button>
+    <button id="btnCompliance" disabled>📋 Review report</button>
     <span class="spacer"></span>
     <button id="btnReviewXlsx" disabled>⬇ Review .xlsx</button>
     <label class="filebtn small">⬆ Apply edited .xlsx
@@ -101,9 +101,10 @@
     <div id="health" class="health" hidden>
       <span class="hlabel">Checks on this diagram</span>
       <button id="btnHealthRules" class="hchip" disabled>BPMN rules …</button>
-      <button id="btnHealthQuality" class="hchip">Data quality — run the 76-rule audit</button>
+      <button id="btnHealthQuality" class="hchip">Review report — checklist + required inputs</button>
     </div>
     <textarea id="feedback" placeholder="Spot a mistake? Describe it here (e.g. 'Validate request belongs to the Standardization team lane'), then press Re-do."></textarea>
+    <div id="redoNote" class="rednote" hidden></div>
     <div class="actions">
       <button id="btnRedo" disabled>⟲ Re-do (applies my feedback)</button>
       <button id="btnRollback" disabled title="Nothing to roll back to yet">⤺ Rollback</button>
@@ -120,6 +121,7 @@
       <h3 id="reviewTitle">Review the extracted process</h3>
       <div class="sheet-actions">
         <button id="btnExportXlsx" class="ghost">⬇ Export as Excel</button>
+        <button id="btnReviewMin" class="ghost icon" aria-label="Minimise">▁</button>
         <button id="btnReviewClose" class="ghost icon" aria-label="Close">✕</button>
       </div>
     </header>
@@ -152,6 +154,7 @@
       <h3 id="reportTitle">Validation report</h3>
       <div class="sheet-actions">
         <button id="btnReportDownload" class="ghost">⬇ Download</button>
+        <button id="btnReportMin" class="ghost icon" aria-label="Minimise">▁</button>
         <button id="btnReportClose" class="ghost icon" aria-label="Close">✕</button>
       </div>
     </header>
@@ -165,6 +168,48 @@
     <footer>
       <span class="spacer"></span>
       <button id="btnReportOk">Close</button>
+    </footer>
+  </dialog>
+
+  <dialog id="insightModal" class="sheet">
+    <header>
+      <h3 id="insightTitle">Review report</h3>
+      <div class="sheet-actions">
+        <button id="btnInsightDownload" class="ghost" disabled>⬇ Download .xlsx</button>
+        <button id="btnInsightMin" class="ghost icon" aria-label="Minimise">▁</button>
+        <button id="btnInsightClose" class="ghost icon" aria-label="Close">✕</button>
+      </div>
+    </header>
+    <nav class="tabs">
+      <button class="tab on" data-tab="checklist">① BPMN checklist</button>
+      <button class="tab" data-tab="modeller">② What is still needed</button>
+    </nav>
+    <div class="sheet-body">
+      <section id="paneChecklist" class="tabpane">
+        <p class="tabhint">Every convention rule scored against <em>this</em> diagram.</p>
+        <div id="checklistSummary" class="summary"></div>
+        <table id="checklistTable">
+          <thead><tr><th>Status</th><th>Rule</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section id="paneModeller" class="tabpane" hidden>
+        <p class="tabhint">Semantic gaps a rule check cannot see — what a process expert would
+          still ask the business before this diagram is signed off.</p>
+        <div id="modellerSummary" class="summary"></div>
+        <table id="modellerTable">
+          <thead><tr>
+            <th>#</th><th>Category</th><th>Element</th>
+            <th>What is missing</th><th>Why it matters</th><th>Question for the business</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+    <footer>
+      <span id="insightCount" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="btnInsightOk">Close</button>
     </footer>
   </dialog>
 

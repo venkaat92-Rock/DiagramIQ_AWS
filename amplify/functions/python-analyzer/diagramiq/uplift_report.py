@@ -226,9 +226,13 @@ def _add_compliance_sheet(wb, compliance_results):
     from openpyxl.utils import get_column_letter
 
     try:
-        from ai_compliance_check import build_rules_payload
+        # Package-relative: a flat import raises inside the package, and the
+        # guard below turned that into a silently missing checklist sheet.
+        from .ai_compliance_check import build_rules_payload
         rules = build_rules_payload()
-    except Exception:
+    except Exception as exc:
+        import sys as _sys
+        print(f"[uplift-report] rule catalogue unavailable: {exc}", file=_sys.stderr)
         rules = []
     if not rules:
         return

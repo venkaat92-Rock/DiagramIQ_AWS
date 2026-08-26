@@ -12,7 +12,11 @@ const state = {
   reviewXlsx: '', changes: [], discovery: null, lastReport: null,
   // `history` is the rollback stack: each entry holds the whole working
   // document as it stood *before* the step named in its label.
-  history: [], validation: null, complianceReport: null,
+  history: [], validation: null, reviewReport: null, modellerInputs: null,
+  // How the review grid's Approve should commit: 'build' makes a new BPMN from
+  // the steps; 'patch' applies the edits onto the diagram already on screen,
+  // which keeps its ids and its layout.
+  reviewMode: 'build',
 };
 
 /* Model picker: dropdown of verified models + free-text custom ID. */
@@ -140,6 +144,8 @@ function download(bytesOrText, filename, mime) {
 function adoptXml(xml, source) {
   state.xml = xml;
   state.xmlSource = source;
+  // The Re-do note describes the edit that produced the *previous* document.
+  $('redoNote').hidden = true;
   $('xmlOut').value = xml;
   for (const id of ENGINE_BTNS) $(id).disabled = !xml;
   $('btnApprove').disabled = !xml;
@@ -199,7 +205,8 @@ function pushHistory(label) {
     discovery: clone(state.discovery),
     changes: [...state.changes],
     complianceResults: clone(state.complianceResults),
-    complianceReport: clone(state.complianceReport),
+    modellerInputs: clone(state.modellerInputs),
+    reviewReport: clone(state.reviewReport),
     reviewXlsx: state.reviewXlsx,
     validation: clone(state.validation),
     feedback: $('feedback').value,
@@ -223,8 +230,8 @@ function rollback() {
   Object.assign(state, {
     xml: prev.xml, model: prev.model, discovery: prev.discovery,
     changes: prev.changes, complianceResults: prev.complianceResults,
-    complianceReport: prev.complianceReport, reviewXlsx: prev.reviewXlsx,
-    validation: prev.validation,
+    modellerInputs: prev.modellerInputs, reviewReport: prev.reviewReport,
+    reviewXlsx: prev.reviewXlsx, validation: prev.validation,
   });
   adoptXml(prev.xml, prev.xmlSource);
   $('feedback').value = prev.feedback || '';
@@ -251,7 +258,6 @@ function rollback() {
    behind a click — but it sits in the same strip, right under the diagram. */
 
 const VALIDATION_TITLE = 'Validation report';
-const QUALITY_TITLE = 'Quality & compliance report';
 
 function validationRows(payload) {
   const rows = [['Severity', 'Source', 'Rule', 'Element', 'Message']];
@@ -289,12 +295,11 @@ function paintChecks() {
          () => showReport(VALIDATION_TITLE, v, validationRows(v)));
   }
 
-  const c = state.complianceReport;
-  if (!c) {
-    chip('btnHealthQuality', 'Data quality — run the 76-rule audit', '', compliance);
+  const r = state.reviewReport;
+  if (!r) {
+    chip('btnHealthQuality', 'Review report — checklist + what is still needed', '', compliance);
   } else {
-    chip('btnHealthQuality', `Data quality — ${c.headline}`, c.cls,
-         () => showReport(QUALITY_TITLE, c.payload, c.rows));
+    chip('btnHealthQuality', `Review report — ${r.headline}`, r.cls, () => openReviewReport());
   }
 }
 
@@ -307,8 +312,9 @@ async function runPostBuildChecks() {
   // A verdict describes the document it was run against. Once that document is
   // replaced, showing the old tally next to the new diagram would be a lie —
   // and it would ride into the uplift report as though it still applied.
-  state.complianceReport = null;
+  state.reviewReport = null;
   state.complianceResults = null;
+  state.modellerInputs = null;
   // A newer diagram invalidates an in-flight check; only the latest may paint.
   const seq = ++checkSeq;
   paintChecks();
@@ -322,6 +328,28 @@ async function runPostBuildChecks() {
     state.validation = { error: e.message, issues: [], summary: {} };
   }
   paintChecks();
+}
+
+/* ---------- sheets: open, minimise, restore --------------------------------
+   A modal dialog blocks the page, which is exactly wrong when the reviewer
+   wants to read a report against the diagram it describes. Minimising reopens
+   the same dialog non-modally, docked in the corner: the report stays
+   readable and the diagram behind it stays live — zoom, pan and all. */
+
+function openSheet(dlg) {
+  dlg.classList.remove('docked');
+  if (dlg.open) dlg.close();
+  dlg.showModal();
+}
+
+function toggleDock(dlg, btn) {
+  const dock = !dlg.classList.contains('docked');
+  if (dlg.open) dlg.close();
+  dlg.classList.toggle('docked', dock);
+  if (dock) dlg.show(); else dlg.showModal();
+  btn.textContent = dock ? '▣' : '▁';
+  btn.title = dock ? 'Maximise' : 'Minimise';
+  btn.setAttribute('aria-label', btn.title);
 }
 
 /** Show a validation or compliance report in a sheet, with a download. */
@@ -356,7 +384,7 @@ function showReport(title, payload, csvRows) {
     }
     tbody.appendChild(tr);
   }
-  $('reportModal').showModal();
+  openSheet($('reportModal'));
 }
 
 function downloadReport() {
@@ -407,7 +435,16 @@ async function aiConvert() {
       $('processName').value = state.model.process_name;
     }
     refreshFromModel();
-    setStatus('Review the preview. Approve to download the BPMN, or type feedback and Re-do.');
+    // Same gate the transcription path has: the extraction is a draft until a
+    // human has been through it step by step. The diagram is already drawn
+    // behind the sheet — minimise it to compare the two.
+    setStatus('Extracted. Opening the review sheet…');
+    try {
+      await openReviewForCurrent('Review — extracted from the image');
+      setStatus('Check each step against the image, then Approve. Minimise the sheet to see the diagram.');
+    } catch (e) {
+      setStatus(`Diagram extracted, but the review sheet could not be built: ${e.message}`, 'warn');
+    }
   } catch (e) {
     setStatus(`AI Convert failed: ${e.message}`, 'error');
   } finally {
@@ -423,6 +460,7 @@ async function redo() {
   setBusy(true);
   setStatus('Applying your feedback with AI…');
   try {
+    const before = state.model;
     const data = await post('/feedback', {
       model: state.model,
       feedback: fb,
@@ -431,10 +469,17 @@ async function redo() {
     state.model = data.model;
     const wasEngine = state.xmlSource === 'engine';
     refreshFromModel();
-    setStatus('Feedback applied — review again, then Approve.' + (wasEngine
+
+    const applied = diffModels(before, data.model);
+    const notApplied = Array.isArray(data.notApplied) ? data.notApplied : [];
+    showRedoNote(applied, notApplied);
+    const head = applied.length
+      ? `Re-do applied ${applied.length} change(s) — see the note below.`
+      : 'Re-do changed nothing — see why below.';
+    setStatus(head + (wasEngine && applied.length
       ? ' Note: Re-do rebuilds the BPMN from the AI\'s understanding, so uplift'
         + ' or layout work already in the XML is not carried over — ⤺ Rollback restores it.'
-      : ''), wasEngine ? 'warn' : 'info');
+      : ''), applied.length ? (wasEngine ? 'warn' : 'info') : 'warn');
   } catch (e) {
     setStatus(`Feedback failed: ${e.message}`, 'error');
   } finally {
@@ -442,6 +487,55 @@ async function redo() {
   }
 }
 
+
+/** What actually changed between two models. The AI's own account of its
+    edits is a claim; this is the ground truth, and it is what answers
+    "it says it moved the task, but the diagram looks the same". */
+function diffModels(before, after) {
+  const A = new Map((before?.nodes || []).map((n) => [n.id, n]));
+  const B = new Map((after?.nodes || []).map((n) => [n.id, n]));
+  const out = [];
+  for (const [id, n] of B) if (!A.has(id)) out.push(`added ${n.type || 'node'} “${n.name}”`);
+  for (const [id, n] of A) if (!B.has(id)) out.push(`removed “${n.name}”`);
+  for (const [id, n] of A) {
+    const m = B.get(id);
+    if (!m) continue;
+    if (n.name !== m.name) out.push(`renamed “${n.name}” → “${m.name}”`);
+    if (n.lane !== m.lane) out.push(`“${m.name}” moved to lane “${m.lane}”`);
+    if (n.type !== m.type) out.push(`“${m.name}” is now a ${m.type}`);
+    if (n.col !== m.col || n.row !== m.row) out.push(`“${m.name}” repositioned`);
+  }
+  const key = (f) => `${f.from}>${f.to}:${f.label || ''}`;
+  const FA = new Set((before?.flows || []).map(key));
+  const FB = new Set((after?.flows || []).map(key));
+  const added = [...FB].filter((k) => !FA.has(k)).length;
+  const gone = [...FA].filter((k) => !FB.has(k)).length;
+  if (added) out.push(`${added} connection(s) added`);
+  if (gone) out.push(`${gone} connection(s) removed`);
+  return out;
+}
+
+/** Report the outcome of a Re-do under the feedback box. */
+function showRedoNote(applied, notApplied) {
+  const el = $('redoNote');
+  const list = (items) => `<ul>${items.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`;
+  const parts = [];
+  parts.push(applied.length
+    ? `<span class="head">Applied ${applied.length} change${applied.length === 1 ? '' : 's'}:</span>${list(applied)}`
+    : '<span class="none">Nothing in the diagram changed.</span>');
+  if (notApplied.length) {
+    parts.push(`<span class="head">Not applied:</span>${list(notApplied)}`);
+  }
+  if (!applied.length && !notApplied.length) {
+    parts.push('<ul><li>The AI returned the same model. Try naming the element '
+             + 'exactly as it is labelled, and say what it should become.</li></ul>');
+  }
+  el.innerHTML = parts.join('');
+  el.hidden = false;
+}
+
+const escapeHtml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /* ---------- review grid (the ⬆ Notes / ⬆ Excel popup) ---------------------- */
 
@@ -504,8 +598,11 @@ function readReview() {
   };
 }
 
-function openReview(discovery, title) {
+function openReview(discovery, title, mode = 'build') {
   state.discovery = discovery;
+  state.reviewMode = mode;
+  $('btnApproveBuild').textContent = mode === 'patch'
+    ? '✓ Approve & apply to the diagram' : '✓ Approve & build BPMN';
   $('reviewTitle').textContent = title || 'Review the extracted process';
   $('revName').value = discovery.process_name || '';
   $('revTrigger').value = discovery.trigger_event || '';
@@ -516,7 +613,7 @@ function openReview(discovery, title) {
   tbody.innerHTML = '';
   (discovery.steps || []).forEach((st, i) => tbody.appendChild(revRow(st, i)));
   renumberRows();
-  $('reviewModal').showModal();
+  openSheet($('reviewModal'));
 }
 
 async function exportReviewXlsx() {
@@ -529,23 +626,52 @@ async function exportReviewXlsx() {
   }
 }
 
-/** Approve: turn the edited grid into BPMN and render it. */
+/** Open the review grid on the diagram currently on screen, by round-tripping
+    it through the review workbook the engine already knows how to write. */
+async function openReviewForCurrent(title) {
+  const sheet = await post('/bpmn-to-excel', { xml: state.xml, processName: procName() });
+  state.reviewXlsx = sheet.fileBase64;
+  const { discovery } = await post('/excel-to-discovery', { fileBase64: sheet.fileBase64 });
+  openReview(discovery || {}, title, 'patch');
+}
+
+/** Approve the edited grid.
+
+    'build' makes a fresh BPMN from the steps — right when the steps are all
+    there is (notes, a discovery workbook). 'patch' applies the edits onto the
+    diagram already on screen, which is right when one exists: rebuilding it
+    from a flat step list would throw away the ids and the faithful column and
+    row positions read off the source image. */
 async function approveReview() {
   const discovery = readReview();
   if (!discovery.steps.length) { setStatus('Add at least one step before approving.', 'error'); return; }
+  const patching = state.reviewMode === 'patch' && !!state.xml;
   $('reviewModal').close();
-  pushHistory('Approve & build BPMN');
+  pushHistory(patching ? 'Approve reviewed steps' : 'Approve & build BPMN');
   setBusy(true);
-  setStatus('Building BPMN from the approved steps…');
+  setStatus(patching ? 'Applying the approved steps to the diagram…'
+                     : 'Building BPMN from the approved steps…');
   try {
-    const d = await post('/discovery-to-bpmn', {
-      discovery, processName: discovery.process_name,
-    });
     state.discovery = discovery;
-    state.reviewXlsx = d.fileBase64 || '';
-    setXml(d.xml, `BPMN built from ${discovery.steps.length} approved step(s).`, d.model);
+    if (patching) {
+      const sheet = await post('/discovery-xlsx', {
+        discovery, processName: discovery.process_name,
+      });
+      state.reviewXlsx = sheet.fileBase64 || '';
+      const d = await post('/patch', { xml: state.xml, fileBase64: sheet.fileBase64 });
+      state.changes = d.changes || [];
+      setXml(d.xml, state.changes.length
+        ? `Applied ${state.changes.length} change(s) from your review.`
+        : 'Approved — the review made no changes to the diagram.', d.model);
+    } else {
+      const d = await post('/discovery-to-bpmn', {
+        discovery, processName: discovery.process_name,
+      });
+      state.reviewXlsx = d.fileBase64 || '';
+      setXml(d.xml, `BPMN built from ${discovery.steps.length} approved step(s).`, d.model);
+    }
   } catch (e) {
-    setStatus(`Could not build the BPMN: ${e.message}`, 'error');
+    setStatus(`Could not apply the review: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
 
@@ -602,7 +728,7 @@ async function acceptExcel(file) {
     const { discovery } = await post('/excel-to-discovery', {
       fileBase64: await fileToB64(file), filename: file.name,
     });
-    openReview(discovery || {}, `Review — ${file.name}`);
+    openReview(discovery || {}, `Review — ${file.name}`, 'build');
     setStatus('Review and edit the steps, then Approve to build the BPMN.');
   } catch (e) {
     setStatus(`Excel upload failed: ${e.message}`, 'error');
@@ -620,7 +746,7 @@ async function acceptNotes(file) {
       processName: procName(),
     });
     state.reviewXlsx = data.fileBase64 || '';
-    openReview(data.discovery || {}, `Review — ${file.name}`);
+    openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
     setStatus('Review and edit the steps, then Approve to build the BPMN.');
   } catch (e) {
     setStatus(`Notes analysis failed: ${e.message}`, 'error');
@@ -685,37 +811,165 @@ const aiGateways = () => engine('Looking for missing gateways', async () => {
             suggestions.map((s) => s.name || s.question || JSON.stringify(s)).join(' · '));
 });
 
-const compliance = () => engine('Auditing against the 76 Auspost rules', async () => {
-  const { results } = await post('/ai-compliance', { xml: state.xml });
-  const rows = Object.entries(results || {});
-  if (!rows.length) { setStatus('Compliance audit returned no verdicts.', 'warn'); return; }
-  state.complianceResults = results;
-  $('btnReport').disabled = false;
-  const tally = rows.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
-  const table = [['Status', 'Rule ID', 'Notes']];
-  for (const [rid, v] of rows) table.push([v.status, rid, v.notes || '']);
+/* ---------- the review report (two tabs) -----------------------------------
+   Tab ①, the BPMN checklist, scores this diagram against every convention
+   rule. Tab ②, what is still needed, is the judgement a rule check cannot
+   make: the gaps a process expert would take back to the business, why each
+   one matters, and the question to ask. Both tabs download as the two-sheet
+   workbook the desktop app produced. */
+
+function fillChecklistTab(results, rules) {
+  const byId = new Map((rules || []).map((r) => [r.id, r]));
+  const entries = Object.entries(results || {});
+  const tally = entries.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
+  const chips = [
+    ['ok', `${tally.Verified || 0} verified`],
+    ['err', `${tally['Not Verified'] || 0} not verified`],
+    ['', `${tally['Not Applicable'] || 0} not applicable`],
+  ];
+  $('checklistSummary').innerHTML = chips
+    .map(([c, t]) => `<span class="chip ${c}">${t}</span>`).join('');
+
+  // Failures first — the point of the tab is what still needs doing.
+  const rank = { 'Not Verified': 0, Verified: 1, 'Not Applicable': 2 };
+  entries.sort((a, b) => (rank[a[1].status] ?? 3) - (rank[b[1].status] ?? 3));
+
+  const tbody = $('checklistTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  for (const [rid, v] of entries) {
+    const rule = byId.get(rid);
+    const tr = document.createElement('tr');
+    tr.dataset.ok = v.status === 'Verified' ? 'yes' : v.status === 'Not Verified' ? 'no' : '';
+    const cells = [
+      v.status,
+      rule ? `${rid} · ${rule.name}` : rid,
+      v.notes || '',
+    ];
+    for (const [i, c] of cells.entries()) {
+      const td = document.createElement('td');
+      if (i === 1 && rule) {
+        td.textContent = rid;
+        const nm = document.createElement('div');
+        nm.textContent = rule.name;
+        nm.style.cssText = 'font-family:inherit;font-size:12px;color:#45566b;white-space:normal';
+        td.appendChild(nm);
+      } else {
+        td.textContent = c;
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  return { entries, tally };
+}
+
+function fillModellerTab(inputs) {
+  const list = inputs || [];
+  $('modellerSummary').innerHTML = list.length
+    ? `<span class="chip warn">${list.length} gap${list.length === 1 ? '' : 's'} to take to the business</span>`
+    : '<span class="chip ok">No gaps flagged — the diagram carries what a modeller needs</span>';
+
+  const tbody = $('modellerTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  list.forEach((g, i) => {
+    const tr = document.createElement('tr');
+    const num = document.createElement('td');
+    num.className = 'num';
+    num.textContent = i + 1;
+    tr.appendChild(num);
+
+    const cat = document.createElement('td');
+    cat.innerHTML = `<span class="cat">${escapeHtml(g.category || '')}</span>`;
+    tr.appendChild(cat);
+
+    for (const v of [g.element_name || g.element_id || '— process-wide —',
+                     g.what_missing || '', g.why_it_matters || '',
+                     g.suggested_question || '']) {
+      const td = document.createElement('td');
+      td.textContent = v;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  });
+}
+
+function showTab(name) {
+  for (const b of document.querySelectorAll('#insightModal .tab')) {
+    b.classList.toggle('on', b.dataset.tab === name);
+  }
+  $('paneChecklist').hidden = name !== 'checklist';
+  $('paneModeller').hidden = name !== 'modeller';
+}
+
+/** Render whatever the last run produced, without re-running it. */
+function openReviewReport(tab = 'checklist') {
+  const r = state.reviewReport;
+  if (!r) return;
+  fillChecklistTab(r.results, r.rules);
+  fillModellerTab(r.inputs);
+  $('insightCount').textContent = r.note;
+  $('btnInsightDownload').disabled = false;
+  showTab(tab);
+  openSheet($('insightModal'));
+}
+
+const compliance = () => engine('Building the review report', async () => {
+  setStatus('Scoring the checklist and looking for gaps — two AI passes, 20–90s…');
+  // Independent passes: run them together, and let one survive the other
+  // failing rather than losing both tabs to a single error.
+  const [audit, gaps] = await Promise.all([
+    post('/ai-compliance', { xml: state.xml }).catch((e) => ({ error: e.message })),
+    post('/ai-modeller-inputs', { xml: state.xml }).catch((e) => ({ error: e.message })),
+  ]);
+  if (audit.error && gaps.error) throw new Error(audit.error);
+
+  const results = audit.results || {};
+  const inputs = Array.isArray(gaps.inputs) ? gaps.inputs : [];
+  const entries = Object.entries(results);
+  const tally = entries.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
   const failed = tally['Not Verified'] || 0;
-  const payload = { summary: { errors: failed, warnings: tally.Pending || 0,
-                               info: tally.Verified || 0 } };
-  state.complianceReport = {
-    payload, rows: table,
-    headline: `${tally.Verified || 0} of ${rows.length} rules verified`,
-    cls: failed ? 'err' : 'ok',
+
+  const notes = [];
+  if (audit.error) notes.push(`checklist unavailable (${audit.error})`);
+  if (gaps.error) notes.push(`gap scan unavailable (${gaps.error})`);
+  if (!audit.error && !entries.length) notes.push('the checklist audit returned no verdicts');
+
+  state.complianceResults = entries.length ? results : null;
+  state.modellerInputs = inputs;
+  state.reviewReport = {
+    results, rules: audit.rules || [], inputs,
+    note: notes.length ? notes.join(' · ')
+                       : `${entries.length} rules scored · ${inputs.length} gaps flagged`,
+    headline: `${tally.Verified || 0}/${entries.length} verified · ${inputs.length} gaps`,
+    cls: failed || !entries.length ? 'err' : inputs.length ? 'warn' : 'ok',
   };
+  $('btnReport').disabled = !(state.changes.length || state.complianceResults);
   paintChecks();
-  showReport(QUALITY_TITLE, payload, table);
-  setStatus('Compliance: ' + Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(' · '));
+  openReviewReport(failed || !inputs.length ? 'checklist' : 'checklist');
+  setStatus(notes.length
+    ? `Review report — ${notes.join(' · ')}`
+    : `Review report: ${state.reviewReport.headline}.`,
+    notes.length ? 'warn' : 'info');
 });
 
-const reviewXlsx = () => engine('Building the review sheet', async () => {
-  const d = await post('/bpmn-to-excel', { xml: state.xml, processName: procName() });
-  state.reviewXlsx = d.fileBase64;
-  // Read it straight back into the grid so the reviewer edits in place; the
-  // sheet is still one click away via Export.
-  const b64 = d.fileBase64;
-  const { discovery } = await post('/excel-to-discovery', { fileBase64: b64 });
-  openReview(discovery || {}, 'Review the current diagram');
+/** The two-sheet workbook: BPMN Checklist + Required Inputs from Modeller. */
+const downloadReviewReport = () => engine('Building the workbook', async () => {
+  const d = await post('/uplift-report', {
+    changes: state.changes || [],
+    sourceName: procName() || 'process',
+    outputName: `${procName() || 'process'}.bpmn`,
+    complianceResults: state.complianceResults || null,
+    modellerInputs: state.modellerInputs || null,
+    onlySheets: ['checklist', 'modeller'],
+  });
+  download(d.fileBase64, `${(procName() || 'process').replace(/[^\w-]+/g, '_')}.review_report.xlsx`,
+           XLSX_MIME);
+  setStatus('Review report downloaded (BPMN Checklist + Required Inputs from Modeller).');
 });
+
+// The reviewer edits in place; the workbook is still one click away via Export.
+const reviewXlsx = () => engine('Building the review sheet',
+  () => openReviewForCurrent('Review the current diagram'));
 
 async function applyPatch(file) {
   if (!file) return;
@@ -734,6 +988,7 @@ const upliftReport = () => engine('Building the uplift report', async () => {
     sourceName: procName() || 'process',
     outputName: `${procName() || 'process'}.bpmn`,
     complianceResults: state.complianceResults || null,
+    modellerInputs: state.modellerInputs || null,
   });
   download(d.fileBase64, d.filename, XLSX_MIME);
   setStatus(`${d.filename} downloaded.`);
@@ -795,6 +1050,21 @@ window.addEventListener('DOMContentLoaded', () => {
   $('btnZoomOut').addEventListener('click', () => zoom.out());
   $('btnZoomFit').addEventListener('click', () => zoom.fit());
   $('btnZoom100').addEventListener('click', () => zoom.actual());
+
+  // ---- minimise / maximise on every sheet ----
+  for (const [dlg, btn] of [['reviewModal', 'btnReviewMin'],
+                            ['reportModal', 'btnReportMin'],
+                            ['insightModal', 'btnInsightMin']]) {
+    $(btn).addEventListener('click', () => toggleDock($(dlg), $(btn)));
+  }
+
+  // ---- review report ----
+  for (const b of document.querySelectorAll('#insightModal .tab')) {
+    b.addEventListener('click', () => showTab(b.dataset.tab));
+  }
+  $('btnInsightDownload').addEventListener('click', downloadReviewReport);
+  $('btnInsightClose').addEventListener('click', () => $('insightModal').close());
+  $('btnInsightOk').addEventListener('click', () => $('insightModal').close());
 
   // ---- engine: alternative inputs ----
   $('bpmnInput').addEventListener('change', (e) => acceptBpmnFile(e.target.files[0]));
