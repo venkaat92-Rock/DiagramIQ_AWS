@@ -2,3 +2,4 @@
 # put on sys.path by index.py. Pure-Python wheels only — no binaries — so the
 # function stays a plain zip Lambda.
 openpyxl>=3.1.0
+pypdf>=5.0.0

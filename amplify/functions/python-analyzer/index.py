@@ -29,6 +29,8 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
 
 from diagramiq.bpmn_parser import parse_bpmn_xml
+from diagramiq.doc_text import UnreadableDocument, extract_text
+from diagramiq.preview_model import model_from_bpmn
 from diagramiq.bpmn_validator import validate_bpmn
 from diagramiq.local_uplift import uplift_local
 from diagramiq.signavio_normalize import make_celonis_compatible, normalize_for_signavio
@@ -44,6 +46,12 @@ CORS = {
 
 def reply(status, body):
     return {"statusCode": status, "headers": CORS, "body": json.dumps(body)}
+
+
+def xml_reply(xml, **extra):
+    """Return BPMN plus the structured model, so the browser can render the
+    'what the AI understood' preview for every input channel, not just images."""
+    return reply(200, {"xml": xml, "model": model_from_bpmn(xml), **extra})
 
 
 # ── /analyze — structural checks over the model JSON the vision pass returns ──
@@ -175,7 +183,7 @@ def route_uplift(body):
     )
     if "error" in out:
         return reply(502, {"error": out["error"]})
-    return reply(200, {"xml": out.get("xml", ""), "log": "".join(log)})
+    return xml_reply(out.get("xml", ""), log="".join(log))
 
 
 def route_visio(body):
@@ -190,7 +198,7 @@ def route_visio(body):
         tmp.write(base64.b64decode(b64))
         tmp.close()
         xml = build_bpmn_from_visio(tmp.name, body.get("processName") or "")
-        return reply(200, {"xml": xml})
+        return xml_reply(xml)
     except VisioConversionError as err:
         return reply(400, {"error": str(err)})
     finally:
@@ -206,8 +214,8 @@ def route_normalize(body):
     if not xml:
         return reply(400, {"error": "xml is required."})
     if body.get("target") == "celonis":
-        return reply(200, {"xml": make_celonis_compatible(normalize_for_signavio(xml))})
-    return reply(200, {"xml": normalize_for_signavio(xml)})
+        return xml_reply(make_celonis_compatible(normalize_for_signavio(xml)))
+    return xml_reply(normalize_for_signavio(xml))
 
 
 def route_analyze(body):
@@ -243,7 +251,7 @@ def route_excel_to_bpmn(body):
         return reply(400, {"error": "fileBase64 is required."})
     path = _stage(b64, ".xlsx")
     try:
-        return reply(200, {"xml": build_bpmn_from_excel(path, body.get("processName") or "")})
+        return xml_reply(build_bpmn_from_excel(path, body.get("processName") or ""))
     finally:
         _drop(path)
 
@@ -279,7 +287,7 @@ def route_patch(body):
     path = _stage(b64, ".xlsx")
     try:
         patched, changes = patch_bpmn_with_excel(xml, path)
-        return reply(200, {"xml": patched, "changes": changes})
+        return xml_reply(patched, changes=changes)
     finally:
         _drop(path)
 
@@ -339,7 +347,7 @@ def route_ai_uplift(body):
     )
     if "error" in out:
         return reply(502, {"error": out["error"]})
-    return reply(200, {"xml": out.get("xml", ""), "log": "".join(log)})
+    return xml_reply(out.get("xml", ""), log="".join(log))
 
 
 def route_ai_gateways(body):
@@ -359,7 +367,7 @@ def route_ai_layout(body):
     xml = body.get("xml")
     if not xml:
         return reply(400, {"error": "xml is required."})
-    return reply(200, {"xml": clean_layout_with_ai(xml, "bedrock", "")})
+    return xml_reply(clean_layout_with_ai(xml, "bedrock", ""))
 
 
 def route_ai_naming(body):
@@ -393,7 +401,12 @@ def route_ai_modeller_inputs(body):
 
 
 def route_notes(body):
-    """Transcript text -> Process Discovery .xlsx (the ⬆ Notes flow)."""
+    """⬆ Notes: .txt / .md / .docx / .pdf -> Process Discovery data.
+
+    Returns the discovery model for the in-browser review grid, plus the .xlsx
+    so the reviewer can export it. The file is read server-side, so Word and PDF
+    work the same way plain text does.
+    """
     from diagramiq.transcription_to_excel import (
         _parse_ai_json,
         build_excel_from_transcription,
@@ -402,9 +415,15 @@ def route_notes(body):
 
     text = body.get("text")
     if not text:
-        return reply(400, {"error": "text is required."})
-    name = body.get("processName") or "Discovered Process"
+        b64 = body.get("fileBase64")
+        if not b64:
+            return reply(400, {"error": "text or fileBase64 is required."})
+        try:
+            text = extract_text(base64.b64decode(b64), body.get("filename") or "notes.txt")
+        except UnreadableDocument as err:
+            return reply(400, {"error": str(err)})
 
+    name = body.get("processName") or "Discovered Process"
     out = {}
     build_excel_from_transcription(
         text=text,
@@ -418,18 +437,107 @@ def route_notes(body):
         return reply(502, {"error": out["error"]})
 
     parsed = _parse_ai_json(out.get("raw", ""))
+    parsed.setdefault("process_name", name)
     path = os.path.join(tempfile.gettempdir(), "discovery.xlsx")
     try:
         save_excel_from_ai_response(parsed, path)
         with open(path, "rb") as fh:
             return reply(200, {
-                "model": parsed,
+                "discovery": parsed,
                 "fileBase64": base64.b64encode(fh.read()).decode(),
                 "filename": f"{name}.discovery.xlsx",
             })
     finally:
         _drop(path)
 
+
+def route_discovery_to_bpmn(body):
+    """The review grid's Approve: edited discovery data -> BPMN, plus the
+    matching .xlsx so Export reflects the edits rather than the original."""
+    from diagramiq.excel_to_bpmn import build_bpmn_from_excel
+    from diagramiq.transcription_to_excel import save_excel_from_ai_response
+
+    discovery = body.get("discovery")
+    if not isinstance(discovery, dict):
+        return reply(400, {"error": "discovery (object) is required."})
+    name = body.get("processName") or discovery.get("process_name") or "Discovered Process"
+
+    path = os.path.join(tempfile.gettempdir(), "approved.xlsx")
+    try:
+        save_excel_from_ai_response(discovery, path)
+        xml = build_bpmn_from_excel(path, name)
+        with open(path, "rb") as fh:
+            return xml_reply(xml,
+                             fileBase64=base64.b64encode(fh.read()).decode(),
+                             filename=f"{name}.discovery.xlsx")
+    finally:
+        _drop(path)
+
+
+def route_discovery_xlsx(body):
+    """Export the current (possibly edited) review grid as .xlsx."""
+    from diagramiq.transcription_to_excel import save_excel_from_ai_response
+
+    discovery = body.get("discovery")
+    if not isinstance(discovery, dict):
+        return reply(400, {"error": "discovery (object) is required."})
+    name = body.get("processName") or discovery.get("process_name") or "Process Discovery"
+    path = os.path.join(tempfile.gettempdir(), "export.xlsx")
+    try:
+        save_excel_from_ai_response(discovery, path)
+        with open(path, "rb") as fh:
+            return reply(200, {
+                "fileBase64": base64.b64encode(fh.read()).decode(),
+                "filename": f"{name}.discovery.xlsx",
+            })
+    finally:
+        _drop(path)
+
+
+def route_excel_to_discovery(body):
+    """⬆ Excel: read a Process Discovery workbook back into review-grid data,
+    so an uploaded sheet opens in the same editable popup as a transcript."""
+    from diagramiq.excel_to_bpmn import parse_process_discovery_excel
+
+    b64 = body.get("fileBase64")
+    if not b64:
+        return reply(400, {"error": "fileBase64 is required."})
+    path = _stage(b64, ".xlsx")
+    try:
+        pd = parse_process_discovery_excel(path)
+    finally:
+        _drop(path)
+
+    # The parser and the Excel writer use different field names; the workbook
+    # is the interchange format, so map the parser's names onto the writer's.
+    steps = [{
+        "activity": st.activity or "",
+        "description": st.description or "",
+        "participant": st.participant or "",
+        "it_systems": st.it_systems or "",
+        "input_document": st.input_doc or "",
+        "output_document": st.output_doc or "",
+        "templates": st.templates or "",
+        "dependency": st.dependency or "",
+        "frequency": st.frequency or "",
+        "pain_points": st.pain_points or "",
+    } for st in (pd.steps or [])]
+
+    return reply(200, {"discovery": {
+        "process_name": pd.process_name or "",
+        "trigger_event": pd.trigger_event or "",
+        "successful_outcome": pd.success_outcome or "",
+        "unsuccessful_outcome": pd.failure_outcome or "",
+        "steps": steps,
+    }})
+
+
+def route_model(body):
+    """BPMN -> preview model, for a diagram the browser already holds."""
+    xml = body.get("xml")
+    if not xml:
+        return reply(400, {"error": "xml is required."})
+    return reply(200, {"model": model_from_bpmn(xml)})
 
 ROUTES = {
     "/analyze": route_analyze,
@@ -448,6 +556,10 @@ ROUTES = {
     "/ai-compliance": route_ai_compliance,
     "/ai-modeller-inputs": route_ai_modeller_inputs,
     "/notes": route_notes,
+    "/discovery-to-bpmn": route_discovery_to_bpmn,
+    "/discovery-xlsx": route_discovery_xlsx,
+    "/excel-to-discovery": route_excel_to_discovery,
+    "/model": route_model,
 }
 
 

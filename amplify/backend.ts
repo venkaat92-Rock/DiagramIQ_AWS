@@ -85,6 +85,10 @@ for (const path of [
   '/ai-compliance',
   '/ai-modeller-inputs',
   '/notes',
+  '/discovery-to-bpmn',
+  '/discovery-xlsx',
+  '/excel-to-discovery',
+  '/model',
 ]) {
   httpApi.addRoutes({
     path,
