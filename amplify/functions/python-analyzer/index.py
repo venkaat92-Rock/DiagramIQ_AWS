@@ -381,13 +381,23 @@ def route_ai_naming(body):
 
 
 def route_ai_compliance(body):
-    """Audit against the 76 Auspost rules — powers the BPMN Checklist sheet."""
-    from diagramiq.ai_compliance_check import check_compliance_with_ai
+    """Audit against the 76 Auspost rules — powers the BPMN Checklist tab.
+
+    The catalogue rides along with the verdicts: the audit is keyed by rule id
+    alone, and an id without its rule text is unreadable in the browser.
+    """
+    from diagramiq.ai_compliance_check import build_rules_payload, check_compliance_with_ai
 
     xml = body.get("xml")
     if not xml:
         return reply(400, {"error": "xml is required."})
-    return reply(200, {"results": check_compliance_with_ai(xml, "bedrock", "")})
+    rules = [{"id": r["id"], "name": r["name"], "category": r["category"],
+              "severity": r["severity"], "kind": r["kind"]}
+             for r in build_rules_payload()]
+    return reply(200, {
+        "results": check_compliance_with_ai(xml, "bedrock", ""),
+        "rules": rules,
+    })
 
 
 def route_ai_modeller_inputs(body):
@@ -521,6 +531,9 @@ def route_excel_to_discovery(body):
         "dependency": st.dependency or "",
         "frequency": st.frequency or "",
         "pain_points": st.pain_points or "",
+        # Carried through untouched: the patcher matches rows to elements by
+        # this, and a row that loses it comes back as a brand-new task.
+        "bpmn_id": st.bpmn_id or "",
     } for st in (pd.steps or [])]
 
     return reply(200, {"discovery": {

@@ -244,6 +244,69 @@ button.ghost.small { background: #e6ebf1; color: var(--ink); margin-top: 10px; }
   background: none; color: #b0342a; padding: 4px 7px; font-size: 14px; font-weight: 700;
 }
 
+/* ── Docked ("minimised") sheets ───────────────────────────────────────────
+   A modal dialog blocks the page, which is exactly wrong when the reviewer
+   wants to read a report against the diagram it describes. Minimising closes
+   the modal and reopens the same dialog non-modally, docked out of the way:
+   the report stays readable and the diagram behind it stays interactive. */
+dialog.sheet.docked {
+  position: fixed;
+  /* Bottom-right, clear of the status bar AND the Re-do / Approve row, so the
+     controls stay reachable while the sheet is parked. */
+  inset: auto 20px 100px auto;
+  width: min(560px, 46vw); max-height: 42vh; margin: 0;
+  box-shadow: 0 10px 30px rgba(10, 25, 45, 0.3);
+}
+/* Columns must not concertina into unreadable slivers — scroll instead. */
+dialog.sheet.docked table { min-width: 560px; }
+dialog.sheet.docked .sheet-body { padding: 10px 12px; font-size: 12px; }
+dialog.sheet.docked header { padding: 9px 12px; }
+dialog.sheet.docked header h3 { font-size: 13px; }
+dialog.sheet.docked footer { display: none; }
+dialog.sheet.docked .tabs { padding: 0 8px; }
+dialog.sheet.docked .tab { padding: 7px 10px; font-size: 11.5px; }
+
+/* ── Tabs ──────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex; gap: 4px; padding: 0 14px; background: #f2f5f9;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  background: none; color: #5b6b7f; border-radius: 0; padding: 10px 14px;
+  font-size: 12.5px; border-bottom: 3px solid transparent;
+}
+.tab.on { color: var(--hdr); border-bottom-color: var(--accent); background: #fff; }
+.tabhint { margin: 0 0 12px; font-size: 12.5px; color: #6b7a8c; }
+.tabpane[hidden] { display: none; }
+
+#checklistTable, #modellerTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+#checklistTable th, #modellerTable th {
+  text-align: left; padding: 7px 8px; border-bottom: 2px solid var(--line);
+  color: #45566b; font-size: 11.5px; position: sticky; top: 0; background: #fff;
+}
+#checklistTable td, #modellerTable td {
+  padding: 6px 8px; border-bottom: 1px solid #eef2f6; vertical-align: top;
+}
+#checklistTable tr[data-ok="no"] td:first-child { color: var(--err); font-weight: 700; }
+#checklistTable tr[data-ok="yes"] td:first-child { color: var(--ok); font-weight: 700; }
+#checklistTable td:nth-child(2) { font-family: Consolas, monospace; font-size: 11.5px; white-space: nowrap; }
+#modellerTable td.num { color: #8a97a6; width: 26px; }
+#modellerTable td:last-child { color: #2c3d51; font-style: italic; }
+.cat {
+  display: inline-block; padding: 3px 8px; border-radius: 11px;
+  background: #eef2f6; color: #45566b; font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+
+/* What Re-do actually did — the answer to "it changed something else". */
+.rednote:not([hidden]) {
+  display: block; margin-top: 8px; padding: 9px 11px; border-radius: 7px;
+  background: #f2f5f9; border-left: 3px solid var(--accent); font-size: 12.5px;
+}
+.rednote ul { margin: 4px 0 0; padding-left: 18px; }
+.rednote li { margin: 2px 0; }
+.rednote .none { color: var(--err); font-weight: 600; }
+.rednote .head { font-weight: 700; color: #2c3d51; }
+
 /* Report */
 .summary { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .summary .chip {

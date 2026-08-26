@@ -64,6 +64,10 @@ class ProcessStep:
     dependency: str
     frequency: str
     pain_points: str
+    # Column K, written by bpmn_to_excel: the id of the element this row came
+    # from. Reading it back is what lets an edited sheet be patched onto the
+    # original diagram instead of rebuilding one from scratch.
+    bpmn_id: str = ""
 
 
 @dataclass
@@ -177,6 +181,7 @@ def parse_process_discovery_excel(file_path: str) -> ProcessDefinition:
             dependency=_cell(row, 7),
             frequency=_cell(row, 8),
             pain_points=_cell(row, 9),
+            bpmn_id=_cell(row, 10),
         ))
 
     if not steps:

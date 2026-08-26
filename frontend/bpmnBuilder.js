@@ -11,6 +11,7 @@
  */
 
 const COL_W = 210, ROW_H = 130, LANE_PAD = 14;
+const LOOP_PAD = 28, LOOP_GAP = 22;   // loop-back channel inside the last lane
 const MARGIN = 30, POOL_HDR = 30, LANE_HDR = 30;
 
 const TAGS = {
@@ -53,7 +54,8 @@ export function layoutModel(model) {
     laneBands.push({ name: lane, y, h });
     y += h;
   }
-  const poolY = MARGIN, poolH = y - MARGIN;
+  const poolY = MARGIN;
+  let poolH = y - MARGIN;   // grows below if loop-backs need a channel
   const bandOf = Object.fromEntries(laneBands.map((b) => [b.name, b]));
 
   const maxCol = Math.max(0, ...nodesIn.map((n) => n._col));
@@ -83,7 +85,7 @@ export function layoutModel(model) {
   let loopK = 0;
   const edges = flowsIn.map((f, i) => {
     const s = nodes[f.from], t = nodes[f.to];
-    let pts;
+    let pts, loop = -1;
     if (Math.abs(s.cy - t.cy) < 2 && t.cx > s.cx) {
       pts = [[s.x + s.w, s.cy], [t.x, t.cy]];                       // straight in-row
     } else if (Math.abs(s.cx - t.cx) < 2) {
@@ -96,14 +98,35 @@ export function layoutModel(model) {
       const ey = t.cy + (ii - (ic - 1) / 2) * 14;                   // staggered entry row
       pts = [[s.x + s.w, s.cy], [chx, s.cy], [chx, ey], [t.x, ey]];
     } else {
-      const chy = poolY + poolH + 28 + loopK * 24; loopK += 1;      // loop-back under pool
-      pts = [[s.cx, s.y + s.h], [s.cx, chy], [t.cx, chy], [t.cx, t.y + t.h]];
+      // Loop-back: routed along a horizontal channel, placed below once the
+      // channel's height is known. Waypoints are filled in after the pass.
+      loop = loopK; loopK += 1;
+      pts = [];
     }
-    return { id: `flow_${i + 1}`, from: f.from, to: f.to, label: String(f.label || ''), points: pts };
+    return { id: `flow_${i + 1}`, from: f.from, to: f.to,
+      label: String(f.label || ''), points: pts, loop };
   });
 
+  // The loop-back channel lives INSIDE the pool: the last lane grows to make
+  // room for it. Routing loop-backs below the pool, as this did originally,
+  // draws sequence flows outside the very container that owns them — which
+  // reads as the diagram spilling out of its frame, and is not valid BPMN DI.
+  if (loopK) {
+    const channel = LOOP_PAD + loopK * LOOP_GAP;
+    laneBands[laneBands.length - 1].h += channel;
+    poolH += channel;
+    const chy0 = poolY + poolH - channel + LOOP_PAD / 2;
+    for (const e of edges) {
+      if (e.loop < 0) continue;
+      const s = nodes[e.from], t = nodes[e.to];
+      const chy = chy0 + e.loop * LOOP_GAP;
+      e.points = [[s.cx, s.y + s.h], [s.cx, chy], [t.cx, chy], [t.cx, t.y + t.h]];
+    }
+  }
+  for (const e of edges) delete e.loop;
+
   return { poolX, poolY, poolW, poolH, lanes: laneBands, nodes, edges,
-    width: poolX + poolW + MARGIN, height: poolY + poolH + 28 + loopK * 24 + MARGIN };
+    width: poolX + poolW + MARGIN, height: poolY + poolH + MARGIN };
 }
 
 export function buildBpmn(model, processName) {

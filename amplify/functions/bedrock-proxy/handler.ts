@@ -5,7 +5,7 @@
  *   POST /convert   { imageBase64, mediaType, processName?, modelId? }
  *                   -> { model: <structured process JSON> }
  *   POST /feedback  { model, feedback, modelId? }
- *                   -> { model: <revised process JSON> }
+ *                   -> { model, changes[], notApplied[] }
  *
  * The Lambda's IAM role carries bedrock:InvokeModel — no API keys anywhere.
  * The BPMN XML itself is built in the browser (frontend/bpmnBuilder.js) from
@@ -29,9 +29,30 @@ Rules:
 Return ONLY a JSON object, no prose, no markdown fences:
 {"process_name":"<title>","lanes":["<top lane>","<next>"],"nodes":[{"id":"n1","type":"start|end|task|gateway|intermediate","name":"<label>","lane":"<lane title>","col":0,"row":0}],"flows":[{"from":"n1","to":"n2","label":""}]}`;
 
-const SYSTEM_FEEDBACK = `You are a senior BPMN process modeller. You receive (1) the current structured model of a business process as JSON (lanes, nodes with grid positions, flows), and (2) FEEDBACK from the human reviewer about mistakes to correct.
-Apply the feedback conservatively: rename labels, add/remove/move nodes or flows, adjust lanes or grid positions — only what the feedback asks for. Keep every id stable where possible.
-Return ONLY the FULL corrected JSON model in exactly the same schema, no prose, no markdown fences.`;
+const SYSTEM_FEEDBACK = `You are a senior BPMN process modeller correcting a structured process model on a reviewer's instruction.
+
+You receive (1) the current model as JSON — lanes, nodes with grid positions, flows — and (2) the reviewer's feedback.
+
+WHAT YOU CONTROL
+- A node's "name", "type" and "lane".
+- A node's "col" (left-to-right order) and "row" (position within its own lane). These are GRID INDICES, not pixels.
+- Adding or deleting nodes and flows; flow labels; the lane list and its order; "process_name".
+
+WHAT YOU DO NOT CONTROL
+The picture is drawn from this model by a separate layout engine. You cannot change connector routing, line spacing, arrow paths, box size, colour, font, or the size of the canvas. If the feedback is about how the diagram LOOKS rather than what the process CONTAINS — lines crossing or overlapping, connectors running outside the frame or the pool, boxes too close together, the diagram not fitting on screen — then change NOTHING and say so in "not_applied". Editing the model to chase a drawing problem is the worst possible answer: it corrupts the process and does not fix the picture.
+
+HOW TO APPLY FEEDBACK
+- Change only what the feedback asks for. Every other node, flow, label, lane and grid position must come back byte-identical to what you received.
+- Keep every existing "id" unchanged. A new node gets a new id that collides with nothing.
+- Read the reviewer literally. If they name an element, act on that element and nothing near it. Do not tidy, rename, re-order or "improve" anything you were not asked about.
+- If the feedback is ambiguous, or names something that is not in the model, do not guess. Leave the model unchanged and explain in "not_applied".
+
+OUTPUT — one JSON object, no prose, no markdown fences:
+{"model": {<the full model, same schema as the input>},
+ "changes": ["<one short line per edit you made, naming the element>"],
+ "not_applied": ["<one line per part of the feedback you did not act on, and why>"]}
+
+Every edit you made must appear in "changes". If you changed nothing, "changes" is [] and "not_applied" says why.`;
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -98,9 +119,21 @@ export const handler = async (event: any) => {
       const prompt =
         'Current model JSON:\n' + JSON.stringify(body.model) +
         '\n\nReviewer feedback to apply:\n' + String(body.feedback) +
-        '\n\nReturn the full corrected JSON model only.';
+        '\n\nReturn the JSON object with "model", "changes" and "not_applied".';
       const text = await converse(modelId, SYSTEM_FEEDBACK, [{ text: prompt }]);
-      return reply(200, { model: extractJson(text) });
+      const out = extractJson(text) as Record<string, unknown>;
+      // Tolerate a bare model: older prompts returned one, and a model that
+      // ignores the envelope should still produce a usable edit rather than a
+      // 502. `nodes` is the tell — the envelope never carries it at top level.
+      const model = (out && typeof out === 'object' && 'nodes' in out) ? out : out?.model;
+      if (!model) throw new Error('The model returned no "model" object.');
+      const lines = (v: unknown) =>
+        (Array.isArray(v) ? v : []).map((x) => String(x)).filter(Boolean).slice(0, 20);
+      return reply(200, {
+        model,
+        changes: lines(out?.changes),
+        notApplied: lines(out?.not_applied),
+      });
     }
 
     return reply(404, { error: `Unknown route: ${path}` });
