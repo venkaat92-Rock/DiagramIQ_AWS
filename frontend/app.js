@@ -1,13 +1,18 @@
 /* DiagramIQ AWS — app logic. */
-import { buildBpmn } from './bpmnBuilder.js';
+import { buildBpmn, layoutModel } from './bpmnBuilder.js';
 import { renderSvg } from './svgPreview.js';
+import { createZoom } from './zoom.js';
 
 const $ = (id) => document.getElementById(id);
+let zoom;                       // preview zoom/pan controller, built on load
 const state = {
   apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png',
   // Engine state. `xml` is the working BPMN once anything produces one;
   // `changes` accumulates the patcher's change log for the uplift report.
   reviewXlsx: '', changes: [], discovery: null, lastReport: null,
+  // `history` is the rollback stack: each entry holds the whole working
+  // document as it stood *before* the step named in its label.
+  history: [], validation: null, complianceReport: null,
 };
 
 /* Model picker: dropdown of verified models + free-text custom ID. */
@@ -46,8 +51,11 @@ const ENGINE_BTNS = ['btnValidate', 'btnUplift', 'btnAiUplift', 'btnAiNaming',
                      'btnAiGateways', 'btnAiLayout', 'btnCompliance', 'btnReviewXlsx'];
 
 function setBusy(busy) {
-  for (const id of ['btnConvert', 'btnRedo', 'btnApprove']) $(id).disabled = busy;
-  // Engine buttons need a BPMN, so releasing busy must not enable them blindly.
+  // Releasing busy must restore each button from state, never enable blindly.
+  $('btnConvert').disabled = busy || !state.imageB64;
+  $('btnRedo').disabled = busy || !state.model;
+  $('btnApprove').disabled = busy || !state.xml;
+  $('btnRollback').disabled = busy || !state.history.length;
   for (const id of ENGINE_BTNS) $(id).disabled = busy || !state.xml;
   $('btnReport').disabled = busy || !(state.changes.length || state.complianceResults);
   document.body.classList.toggle('busy', busy);
@@ -128,23 +136,192 @@ function download(bytesOrText, filename, mime) {
   URL.revokeObjectURL(a.href);
 }
 
-/** Adopt a BPMN as the working document, and render what it contains.
-    Every XML-producing route returns `model`, so the preview fills in for
-    Excel, Visio and uploads — not only the image path. */
-function setXml(xml, note, model) {
+/** Take a BPMN as the working document. */
+function adoptXml(xml, source) {
   state.xml = xml;
+  state.xmlSource = source;
   $('xmlOut').value = xml;
+  for (const id of ENGINE_BTNS) $(id).disabled = !xml;
+  $('btnApprove').disabled = !xml;
+}
+
+/** Draw a model in the preview pane and describe it in the stats line.
+    Deliberately does not touch state.xml: an engine route owns the XML it
+    returned, and regenerating it from the (lossier) preview model would throw
+    away exactly the detail the uplift just added. */
+function renderPreview(model) {
+  const name = $('processName').value.trim() || model?.process_name || 'DiagramIQ AWS Process';
+  const layout = layoutModel({ ...model, process_name: name });
+  zoom.render(renderSvg(layout));
+  const nodes = Object.values(layout.nodes);
+  const count = (...types) => nodes.filter((n) => types.includes(n.type)).length;
+  $('stats').textContent =
+    `Understood:  ${layout.lanes.length} lanes · ${count('task')} tasks · ` +
+    `${count('gateway')} gateways · ${count('start', 'end', 'intermediate')} events · ` +
+    `${layout.edges.length} connections`;
+  $('btnRedo').disabled = false;
+}
+
+/** Adopt a BPMN and render what it contains. Every XML-producing route returns
+    `model`, so the preview fills in for Excel, Visio and uploads — not only
+    the image path. */
+function setXml(xml, note, model) {
+  adoptXml(xml, 'engine');
   if (model && model.nodes && model.nodes.length) {
     state.model = model;
     try {
-      refreshFromModel();
+      renderPreview(model);
     } catch (e) {
       setStatus(`Preview could not be drawn: ${e.message}`, 'warn');
     }
   }
-  for (const id of ENGINE_BTNS) $(id).disabled = !xml;
-  $('btnApprove').disabled = !xml;
   if (note) setStatus(note);
+  runPostBuildChecks();
+}
+
+
+/* ---------- version history (⤺ Rollback) ----------------------------------
+   Every step that replaces the working diagram stacks the previous one first,
+   so a re-do that comes back worse than what it replaced is one click to undo.
+   Feedback text is kept too — you get back the wording you were refining. */
+
+const HISTORY_MAX = 20;
+const clone = (v) => (v ? JSON.parse(JSON.stringify(v)) : null);
+
+/** Capture the working document before `label` replaces it. */
+function pushHistory(label) {
+  if (!state.xml && !state.model) return;      // nothing worth restoring yet
+  state.history.push({
+    label,
+    xml: state.xml,
+    xmlSource: state.xmlSource,
+    model: clone(state.model),
+    discovery: clone(state.discovery),
+    changes: [...state.changes],
+    complianceResults: clone(state.complianceResults),
+    complianceReport: clone(state.complianceReport),
+    reviewXlsx: state.reviewXlsx,
+    validation: clone(state.validation),
+    feedback: $('feedback').value,
+  });
+  if (state.history.length > HISTORY_MAX) state.history.shift();
+  syncRollback();
+}
+
+function syncRollback() {
+  const n = state.history.length;
+  const btn = $('btnRollback');
+  btn.disabled = !n;
+  btn.textContent = n ? `⤺ Rollback (${n})` : '⤺ Rollback';
+  btn.title = n ? `Undo "${state.history[n - 1].label}" and restore the previous version`
+                : 'Nothing to roll back to yet';
+}
+
+function rollback() {
+  const prev = state.history.pop();
+  if (!prev) return;
+  Object.assign(state, {
+    xml: prev.xml, model: prev.model, discovery: prev.discovery,
+    changes: prev.changes, complianceResults: prev.complianceResults,
+    complianceReport: prev.complianceReport, reviewXlsx: prev.reviewXlsx,
+    validation: prev.validation,
+  });
+  adoptXml(prev.xml, prev.xmlSource);
+  $('feedback').value = prev.feedback || '';
+  if (prev.model && prev.model.nodes && prev.model.nodes.length) {
+    renderPreview(prev.model);
+  } else {
+    // Nothing to draw from — better a blank pane than a diagram that is no
+    // longer the working document.
+    zoom.clear();
+    $('stats').textContent = '';
+    $('btnRedo').disabled = true;
+  }
+  paintChecks();
+  syncRollback();
+  setBusy(false);
+  setStatus(`Rolled back — undid "${prev.label}". ` +
+            (state.history.length ? `${state.history.length} more step(s) available.`
+                                  : 'This is the earliest version kept.'));
+}
+
+/* ---------- post-build checks ---------------------------------------------
+   BPMN rule validation is local and cheap, so it runs by itself the moment a
+   diagram exists. The 76-rule quality audit costs a model call, so it stays
+   behind a click — but it sits in the same strip, right under the diagram. */
+
+const VALIDATION_TITLE = 'Validation report';
+const QUALITY_TITLE = 'Quality & compliance report';
+
+function validationRows(payload) {
+  const rows = [['Severity', 'Source', 'Rule', 'Element', 'Message']];
+  for (const i of payload.issues || []) {
+    rows.push([i.severity, i.source, i.rule_id, i.element_name || i.element_id || '—', i.message]);
+  }
+  return rows;
+}
+
+function chip(id, text, cls, onOpen) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = `hchip ${cls}`.trim();
+  el.disabled = !onOpen;
+  el.onclick = onOpen || null;
+  if (onOpen) el.classList.add('live');
+}
+
+/** Redraw both chips from whatever state currently holds. */
+function paintChecks() {
+  $('health').hidden = !state.xml;
+  if (!state.xml) return;
+
+  const v = state.validation;
+  if (!v) {
+    chip('btnHealthRules', 'BPMN rules — checking…', '');
+  } else if (v.error) {
+    chip('btnHealthRules', `BPMN rules — check failed`, 'warn');
+  } else {
+    const { errors = 0, warnings = 0 } = v.summary || {};
+    const text = errors || warnings
+      ? `BPMN rules — ${errors} error${errors === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'}`
+      : 'BPMN rules — clean';
+    chip('btnHealthRules', text, errors ? 'err' : warnings ? 'warn' : 'ok',
+         () => showReport(VALIDATION_TITLE, v, validationRows(v)));
+  }
+
+  const c = state.complianceReport;
+  if (!c) {
+    chip('btnHealthQuality', 'Data quality — run the 76-rule audit', '', compliance);
+  } else {
+    chip('btnHealthQuality', `Data quality — ${c.headline}`, c.cls,
+         () => showReport(QUALITY_TITLE, c.payload, c.rows));
+  }
+}
+
+let checkSeq = 0;
+
+/** Validate the working diagram in the background. Never throws, never takes
+    the busy lock — it must not get in the way of the next action. */
+async function runPostBuildChecks() {
+  state.validation = null;
+  // A verdict describes the document it was run against. Once that document is
+  // replaced, showing the old tally next to the new diagram would be a lie —
+  // and it would ride into the uplift report as though it still applied.
+  state.complianceReport = null;
+  state.complianceResults = null;
+  // A newer diagram invalidates an in-flight check; only the latest may paint.
+  const seq = ++checkSeq;
+  paintChecks();
+  if (!state.xml || !state.apiUrl) return;
+  try {
+    const payload = await post('/validate', { xml: state.xml });
+    if (seq !== checkSeq) return;
+    state.validation = payload;
+  } catch (e) {
+    if (seq !== checkSeq) return;
+    state.validation = { error: e.message, issues: [], summary: {} };
+  }
+  paintChecks();
 }
 
 /** Show a validation or compliance report in a sheet, with a download. */
@@ -205,31 +382,18 @@ async function engine(label, fn) {
   }
 }
 
+/** The image/feedback path: the model is the source of truth, so the BPMN is
+    (re)built from it and then drawn. */
 function refreshFromModel() {
   const name = $('processName').value.trim() || state.model?.process_name || 'DiagramIQ AWS Process';
-  const { xml, layout } = buildBpmn(state.model, name);
-  state.xml = xml;
-  $('svgPane').innerHTML = renderSvg(layout);
-  const nodes = Object.values(layout.nodes);
-  const stats = {
-    lanes: layout.lanes.length,
-    tasks: nodes.filter((n) => n.type === 'task').length,
-    gateways: nodes.filter((n) => n.type === 'gateway').length,
-    events: nodes.filter((n) => ['start', 'end', 'intermediate'].includes(n.type)).length,
-    flows: layout.edges.length,
-  };
-  $('stats').textContent =
-    `Understood:  ${stats.lanes} lanes · ${stats.tasks} tasks · ${stats.gateways} gateways · ${stats.events} events · ${stats.flows} connections`;
-  $('btnRedo').disabled = false;
-  // Adopt the XML directly: we are already inside the preview path.
-  state.xml = xml;
-  $('xmlOut').value = xml;
-  for (const id of ENGINE_BTNS) $(id).disabled = !xml;
-  $('btnApprove').disabled = !xml;
+  adoptXml(buildBpmn(state.model, name).xml, 'model');
+  renderPreview(state.model);
+  runPostBuildChecks();
 }
 
 async function aiConvert() {
   if (!state.imageB64) { setStatus('Upload an image first.', 'error'); return; }
+  pushHistory('AI Convert');
   setBusy(true);
   setStatus('✨ AI is reading the diagram… (10–60s)');
   try {
@@ -255,6 +419,7 @@ async function redo() {
   const fb = $('feedback').value.trim();
   if (!state.model) return;
   if (!fb) { refreshFromModel(); setStatus('Re-rendered (no feedback text given).'); return; }
+  pushHistory('Re-do with feedback');
   setBusy(true);
   setStatus('Applying your feedback with AI…');
   try {
@@ -264,8 +429,12 @@ async function redo() {
       modelId: currentModelId(),
     });
     state.model = data.model;
+    const wasEngine = state.xmlSource === 'engine';
     refreshFromModel();
-    setStatus('Feedback applied — review again, then Approve.');
+    setStatus('Feedback applied — review again, then Approve.' + (wasEngine
+      ? ' Note: Re-do rebuilds the BPMN from the AI\'s understanding, so uplift'
+        + ' or layout work already in the XML is not carried over — ⤺ Rollback restores it.'
+      : ''), wasEngine ? 'warn' : 'info');
   } catch (e) {
     setStatus(`Feedback failed: ${e.message}`, 'error');
   } finally {
@@ -365,6 +534,7 @@ async function approveReview() {
   const discovery = readReview();
   if (!discovery.steps.length) { setStatus('Add at least one step before approving.', 'error'); return; }
   $('reviewModal').close();
+  pushHistory('Approve & build BPMN');
   setBusy(true);
   setStatus('Building BPMN from the approved steps…');
   try {
@@ -388,6 +558,7 @@ const procName = () => $('processName').value.trim();
 
 async function acceptBpmnFile(file) {
   if (!file) return;
+  pushHistory(`Load ${file.name}`);
   setBusy(true);
   try {
     const xml = await file.text();
@@ -404,6 +575,7 @@ async function acceptBpmnFile(file) {
 
 async function acceptEngineFile(file, route, label) {
   if (!file) return;
+  pushHistory(label);
   setBusy(true);
   setStatus(`${label}…`);
   try {
@@ -457,27 +629,29 @@ async function acceptNotes(file) {
 
 const validate = () => engine('Validating', async () => {
   const payload = await post('/validate', { xml: state.xml });
-  const rows = [['Severity', 'Source', 'Rule', 'Element', 'Message']];
-  for (const i of payload.issues || []) {
-    rows.push([i.severity, i.source, i.rule_id, i.element_name || i.element_id || '—', i.message]);
-  }
+  state.validation = payload;
+  paintChecks();
+  const rows = validationRows(payload);
   if (rows.length === 1) { setStatus('Validation passed — no issues found.'); return; }
-  showReport('Validation report', payload, rows);
+  showReport(VALIDATION_TITLE, payload, rows);
   const { errors = 0, warnings = 0 } = payload.summary || {};
   setStatus(`Validation: ${errors} errors, ${warnings} warnings.`);
 });
 
 const uplift = () => engine('Applying rule-based uplift', async () => {
+  pushHistory('Rule-based uplift');
   const d = await post('/uplift', { xml: state.xml, processName: procName() });
   setXml(d.xml, 'Rule-based uplift applied. Validate again to see what changed.', d.model);
 });
 
 const aiUplift = () => engine('AI uplift', async () => {
+  pushHistory('AI uplift');
   const d = await post('/ai-uplift', { xml: state.xml, processName: procName() });
   setXml(d.xml, 'AI uplift applied. Validate again to see what changed.', d.model);
 });
 
 const aiLayout = () => engine('Cleaning layout', async () => {
+  pushHistory('Layout cleanup');
   const d = await post('/ai-layout', { xml: state.xml });
   setXml(d.xml, 'Layout cleaned (waypoints only).', d.model);
 });
@@ -495,6 +669,7 @@ const aiNaming = () => engine('Reviewing names', async () => {
   const { fixes } = await post('/ai-naming', { taskNames });
   const n = Object.keys(fixes || {}).length;
   if (!n) { setStatus('Naming review: no changes suggested.'); return; }
+  pushHistory('Naming review');
   for (const [id, newName] of Object.entries(fixes)) {
     const el = doc.querySelector(`[id="${id}"]`);
     if (el) el.setAttribute('name', newName);
@@ -519,9 +694,16 @@ const compliance = () => engine('Auditing against the 76 Auspost rules', async (
   const tally = rows.reduce((a, [, v]) => (a[v.status] = (a[v.status] || 0) + 1, a), {});
   const table = [['Status', 'Rule ID', 'Notes']];
   for (const [rid, v] of rows) table.push([v.status, rid, v.notes || '']);
-  showReport('Quality & compliance report',
-    { summary: { errors: tally['Not Verified'] || 0, warnings: tally.Pending || 0,
-                 info: tally.Verified || 0 } }, table);
+  const failed = tally['Not Verified'] || 0;
+  const payload = { summary: { errors: failed, warnings: tally.Pending || 0,
+                               info: tally.Verified || 0 } };
+  state.complianceReport = {
+    payload, rows: table,
+    headline: `${tally.Verified || 0} of ${rows.length} rules verified`,
+    cls: failed ? 'err' : 'ok',
+  };
+  paintChecks();
+  showReport(QUALITY_TITLE, payload, table);
   setStatus('Compliance: ' + Object.entries(tally).map(([k, v]) => `${v} ${k}`).join(' · '));
 });
 
@@ -538,6 +720,7 @@ const reviewXlsx = () => engine('Building the review sheet', async () => {
 async function applyPatch(file) {
   if (!file) return;
   await engine('Applying your edits', async () => {
+    pushHistory(`Edits from ${file.name}`);
     const d = await post('/patch', { xml: state.xml, fileBase64: await fileToB64(file) });
     state.changes = d.changes || [];
     $('btnReport').disabled = state.changes.length === 0;
@@ -587,8 +770,11 @@ async function approveDownload() {
 
 /* ---------- wire up -------------------------------------------------------- */
 window.addEventListener('DOMContentLoaded', () => {
+  zoom = createZoom({ pane: $('svgPane'), label: $('zoomLabel') });
   loadOutputs();
   initModelPicker();
+  syncRollback();
+  paintChecks();
   $('fileInput').addEventListener('change', (e) => acceptImage(e.target.files[0]));
   const drop = $('imgPane');
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
@@ -599,9 +785,16 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   $('btnConvert').addEventListener('click', aiConvert);
   $('btnRedo').addEventListener('click', redo);
+  $('btnRollback').addEventListener('click', rollback);
   $('btnApprove').addEventListener('click', approveDownload);
   $('btnXml').addEventListener('click', () => $('xmlModal').showModal());
   $('btnXmlClose').addEventListener('click', () => $('xmlModal').close());
+
+  // ---- preview zoom ----
+  $('btnZoomIn').addEventListener('click', () => zoom.in());
+  $('btnZoomOut').addEventListener('click', () => zoom.out());
+  $('btnZoomFit').addEventListener('click', () => zoom.fit());
+  $('btnZoom100').addEventListener('click', () => zoom.actual());
 
   // ---- engine: alternative inputs ----
   $('bpmnInput').addEventListener('change', (e) => acceptBpmnFile(e.target.files[0]));

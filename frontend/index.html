@@ -80,8 +80,17 @@
       <div class="hint">Drop a process diagram image here<br />or use ⬆ Image above.</div>
       <img id="imgPreview" alt="" />
     </section>
-    <section class="pane">
-      <h2>What the AI understood — review before approving</h2>
+    <section class="pane" id="previewPane">
+      <div class="panehead">
+        <h2>What the AI understood — review before approving</h2>
+        <div class="zoombar">
+          <button id="btnZoomOut" class="zbtn" title="Zoom out (Ctrl + scroll)">−</button>
+          <span id="zoomLabel" class="zlabel">—</span>
+          <button id="btnZoomIn" class="zbtn" title="Zoom in (Ctrl + scroll)">+</button>
+          <button id="btnZoomFit" class="zbtn wide" title="Fit the whole diagram">Fit</button>
+          <button id="btnZoom100" class="zbtn wide" title="Actual size">1:1</button>
+        </div>
+      </div>
       <div id="svgPane"></div>
     </section>
   </main>
@@ -89,9 +98,15 @@
 
   <div class="reviewbar">
     <div id="stats"></div>
+    <div id="health" class="health" hidden>
+      <span class="hlabel">Checks on this diagram</span>
+      <button id="btnHealthRules" class="hchip" disabled>BPMN rules …</button>
+      <button id="btnHealthQuality" class="hchip">Data quality — run the 76-rule audit</button>
+    </div>
     <textarea id="feedback" placeholder="Spot a mistake? Describe it here (e.g. 'Validate request belongs to the Standardization team lane'), then press Re-do."></textarea>
     <div class="actions">
       <button id="btnRedo" disabled>⟲ Re-do (applies my feedback)</button>
+      <button id="btnRollback" disabled title="Nothing to roll back to yet">⤺ Rollback</button>
       <span class="spacer"></span>
       <button id="btnApprove" disabled>✓ Approve &amp; Download .bpmn</button>
     </div>
