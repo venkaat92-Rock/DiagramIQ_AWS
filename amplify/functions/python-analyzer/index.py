@@ -37,9 +37,15 @@ from diagramiq.signavio_normalize import make_celonis_compatible, normalize_for_
 from diagramiq.signavio_rules import validate_signavio
 from diagramiq.visio_to_bpmn import VisioConversionError, build_bpmn_from_visio
 
+# allow-methods and max-age matter now that the function answers its own
+# preflight: behind the gateway that was the gateway's job, but a Function URL
+# without a CORS configuration forwards OPTIONS straight here, and a preflight
+# without allow-methods is rejected by the browser.
 CORS = {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",
+    "access-control-allow-methods": "POST,OPTIONS",
+    "access-control-max-age": "86400",
     "content-type": "application/json",
 }
 
@@ -391,12 +397,23 @@ def route_ai_compliance(body):
     xml = body.get("xml")
     if not xml:
         return reply(400, {"error": "xml is required."})
+    catalogue = build_rules_payload()
+    # Optional slice: the browser fans the catalogue out over several calls so
+    # each generation stays short. Without it, all 76 rules go in one call.
+    try:
+        offset = max(0, int(body.get("ruleOffset") or 0))
+        limit = int(body.get("ruleLimit") or 0)
+    except (TypeError, ValueError):
+        return reply(400, {"error": "ruleOffset and ruleLimit must be integers."})
+    subset = catalogue[offset:offset + limit] if limit > 0 else catalogue
+
     rules = [{"id": r["id"], "name": r["name"], "category": r["category"],
               "severity": r["severity"], "kind": r["kind"]}
-             for r in build_rules_payload()]
+             for r in subset]
     return reply(200, {
-        "results": check_compliance_with_ai(xml, "bedrock", ""),
+        "results": check_compliance_with_ai(xml, "bedrock", "", rules=subset),
         "rules": rules,
+        "ruleTotal": len(catalogue),
     })
 
 

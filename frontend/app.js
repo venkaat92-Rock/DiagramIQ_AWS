@@ -65,12 +65,19 @@ function setBusy(busy) {
   document.body.classList.toggle('busy', busy);
 }
 
+const trimSlash = (u) => String(u || '').replace(/\/+$/, '');
+
 async function loadOutputs() {
   try {
     const r = await fetch('./amplify_outputs.json', { cache: 'no-store' });
     if (!r.ok) throw new Error(String(r.status));
     const o = await r.json();
-    state.apiUrl = o?.custom?.diagramiqApiUrl || '';
+    state.apiUrl = trimSlash(o?.custom?.diagramiqApiUrl);
+    // Function URLs, where present: they have no 30-second ceiling, which the
+    // AI passes need. An older deployment has neither, and everything falls
+    // back to the gateway.
+    state.engineUrl = trimSlash(o?.custom?.diagramiqEngineUrl);
+    state.aiUrl = trimSlash(o?.custom?.diagramiqAiUrl);
   } catch { /* not deployed yet */ }
   if (!state.apiUrl) {
     setStatus('Backend not connected — deploy via Amplify (see README). You can still explore the UI.', 'warn');
@@ -102,16 +109,46 @@ function acceptImage(file) {
   img.src = URL.createObjectURL(file);
 }
 
+/** Drop the uploaded image. Another input channel has taken over, and leaving
+    the old picture in the pane invites comparing it against a diagram it has
+    nothing to do with. */
+function clearImage() {
+  if (!state.imageB64 && !$('imgPane').classList.contains('has-image')) return;
+  state.imageB64 = '';
+  $('imgPreview').removeAttribute('src');
+  $('imgPane').classList.remove('has-image');
+  $('btnConvert').disabled = true;
+}
+
 /* ---------- API calls ------------------------------------------------------ */
+
+/** /convert and /feedback are the Node proxy; everything else is the Python
+    engine. Each goes direct to its Lambda when a Function URL is published. */
+const AI_PROXY_ROUTES = new Set(['/convert', '/feedback']);
+function endpointFor(path) {
+  const direct = AI_PROXY_ROUTES.has(path) ? state.aiUrl : state.engineUrl;
+  return direct || state.apiUrl;
+}
+
 async function post(path, body) {
-  if (!state.apiUrl) throw new Error('Backend not connected — deploy the Amplify backend first (see README).');
-  const r = await fetch(state.apiUrl + path, {
+  const base = endpointFor(path);
+  if (!base) throw new Error('Backend not connected — deploy the Amplify backend first (see README).');
+  const r = await fetch(base + path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    if (!data.error && (r.status === 503 || r.status === 504)) {
+      // No error body means this never reached the function: the gateway gave
+      // up while the Lambda was still working.
+      throw new Error(`the gateway timed out (HTTP ${r.status}) — an API Gateway `
+        + 'route cuts off at 30s and the AI passes run longer. Redeploy so the '
+        + 'Function URLs in amplify_outputs.json are picked up.');
+    }
+    throw new Error(data.error || `HTTP ${r.status}`);
+  }
   return data;
 }
 
@@ -684,6 +721,7 @@ const procName = () => $('processName').value.trim();
 
 async function acceptBpmnFile(file) {
   if (!file) return;
+  clearImage();
   pushHistory(`Load ${file.name}`);
   setBusy(true);
   try {
@@ -701,6 +739,7 @@ async function acceptBpmnFile(file) {
 
 async function acceptEngineFile(file, route, label) {
   if (!file) return;
+  clearImage();
   pushHistory(label);
   setBusy(true);
   setStatus(`${label}…`);
@@ -722,6 +761,7 @@ async function acceptEngineFile(file, route, label) {
 /** ⬆ Excel — a Process Discovery workbook opens in the same editable grid. */
 async function acceptExcel(file) {
   if (!file) return;
+  clearImage();
   setBusy(true);
   setStatus(`Reading ${file.name}…`);
   try {
@@ -737,6 +777,7 @@ async function acceptExcel(file) {
 
 async function acceptNotes(file) {
   if (!file) return;
+  clearImage();
   setBusy(true);
   setStatus(`AI is reading ${file.name}… (10–60s)`);
   try {
@@ -913,12 +954,41 @@ function openReviewReport(tab = 'checklist') {
   openSheet($('insightModal'));
 }
 
+/** Score the catalogue in slices.
+
+    One call for all 76 rules is a single very long generation: slow enough to
+    run into a caller's timeout, and long enough that one malformed token loses
+    every verdict. Slices run concurrently, so the wall clock is roughly two
+    batches rather than the whole catalogue, and a slice that fails costs only
+    its own rules. */
+const RULE_BATCH = 20;
+async function auditInBatches(xml) {
+  // The first slice reports the catalogue size; the rest then go out together.
+  const first = await post('/ai-compliance', { xml, ruleOffset: 0, ruleLimit: RULE_BATCH });
+  const total = first.ruleTotal || RULE_BATCH;
+  const pending = [];
+  for (let off = RULE_BATCH; off < total; off += RULE_BATCH) {
+    pending.push(post('/ai-compliance', { xml, ruleOffset: off, ruleLimit: RULE_BATCH }));
+  }
+  setStatus(`Scoring ${total} rules in ${pending.length + 1} batches, and scanning for gaps…`);
+
+  const results = { ...(first.results || {}) };
+  const rules = [...(first.rules || [])];
+  let lost = 0;
+  for (const part of await Promise.allSettled(pending)) {
+    if (part.status !== 'fulfilled') { lost += 1; continue; }
+    Object.assign(results, part.value.results || {});
+    rules.push(...(part.value.rules || []));
+  }
+  return { results, rules, total, lost };
+}
+
 const compliance = () => engine('Building the review report', async () => {
-  setStatus('Scoring the checklist and looking for gaps — two AI passes, 20–90s…');
+  setStatus('Scoring the checklist and looking for gaps — this runs several AI passes…');
   // Independent passes: run them together, and let one survive the other
   // failing rather than losing both tabs to a single error.
   const [audit, gaps] = await Promise.all([
-    post('/ai-compliance', { xml: state.xml }).catch((e) => ({ error: e.message })),
+    auditInBatches(state.xml).catch((e) => ({ error: e.message })),
     post('/ai-modeller-inputs', { xml: state.xml }).catch((e) => ({ error: e.message })),
   ]);
   if (audit.error && gaps.error) throw new Error(audit.error);
@@ -933,6 +1003,8 @@ const compliance = () => engine('Building the review report', async () => {
   if (audit.error) notes.push(`checklist unavailable (${audit.error})`);
   if (gaps.error) notes.push(`gap scan unavailable (${gaps.error})`);
   if (!audit.error && !entries.length) notes.push('the checklist audit returned no verdicts');
+  if (audit.lost) notes.push(`${audit.lost} rule batch(es) failed — ${entries.length} of `
+                             + `${audit.total} rules scored`);
 
   state.complianceResults = entries.length ? results : null;
   state.modellerInputs = inputs;

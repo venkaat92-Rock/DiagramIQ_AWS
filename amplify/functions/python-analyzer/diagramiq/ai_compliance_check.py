@@ -101,15 +101,22 @@ def check_compliance_with_ai(
     api_key: str,
     *,
     max_xml_chars: int = 60000,
+    rules: List[Dict[str, str]] | None = None,
 ) -> Dict[str, Dict[str, str]]:
     """Run the compliance audit. Returns {} if skipped or on failure;
     the report writer treats {} as "AI verification not available" and
     falls back to "Pending" status for every rule.
+
+    `rules` audits a subset instead of the whole catalogue. Scoring all 76 in
+    one call means one very long generation: slow enough to run into a caller's
+    timeout, and long enough that a single malformed token loses every verdict.
+    Callers that want it fast and durable split the catalogue and merge.
     """
     if provider == "local" or (not api_key and provider != "bedrock"):
         return {}
 
-    rules = build_rules_payload()
+    if rules is None:
+        rules = build_rules_payload()
     if not rules:
         return {}
 
