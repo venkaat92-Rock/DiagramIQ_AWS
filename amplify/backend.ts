@@ -7,7 +7,12 @@ import {
 } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
-import { Code, Function as LambdaFunction, Runtime } from 'aws-cdk-lib/aws-lambda';
+import {
+  Code,
+  FunctionUrlAuthType,
+  Function as LambdaFunction,
+  Runtime,
+} from 'aws-cdk-lib/aws-lambda';
 import { bedrockProxy } from './functions/bedrock-proxy/resource';
 
 const backend = defineBackend({ bedrockProxy });
@@ -97,10 +102,29 @@ for (const path of [
   });
 }
 
-// Expose the endpoint to the frontend via amplify_outputs.json.
+// Direct Function URLs for the AI work.
+//
+// An HTTP API cuts its integration off at 30 seconds and answers a bare 503 —
+// no error body, nothing in the Lambda's log, because the Lambda is still
+// running. The AI passes routinely exceed that: the compliance audit reasons
+// over all 76 rules in one call, and the gap scan reads the whole diagram. A
+// Function URL has no such ceiling, so the function's own 300s timeout is what
+// applies. The gateway keeps serving the fast, deterministic routes, and the
+// frontend falls back to it if these outputs are missing.
+//
+// CORS is deliberately left off the URL configuration: both handlers already
+// emit CORS headers for the gateway's sake, and a URL-level configuration
+// would be a second source of the same headers. One source, answered by the
+// function's own OPTIONS branch, is a thing that can be reasoned about.
+const engineUrl = pythonEngine.addFunctionUrl({ authType: FunctionUrlAuthType.NONE });
+const aiUrl = fn.addFunctionUrl({ authType: FunctionUrlAuthType.NONE });
+
+// Expose the endpoints to the frontend via amplify_outputs.json.
 backend.addOutput({
   custom: {
     diagramiqApiUrl: httpApi.apiEndpoint,
+    diagramiqEngineUrl: engineUrl.url,   // Python engine, no 30s ceiling
+    diagramiqAiUrl: aiUrl.url,           // /convert and /feedback
     region: Stack.of(apiStack).region,
   },
 });

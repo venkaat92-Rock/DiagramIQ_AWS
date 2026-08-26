@@ -1,12 +1,13 @@
 {
   "name": "diagramiq-aws",
   "version": "1.0.0",
-  "description": "DiagramIQ on AWS — AI Convert (image → BPMN 2.0) with Amplify Hosting + Bedrock",
+  "description": "DiagramIQ on AWS \u2014 AI Convert (image \u2192 BPMN 2.0) with Amplify Hosting + Bedrock",
   "type": "module",
   "private": true,
   "scripts": {
     "sandbox": "ampx sandbox",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "node test/e2e.mjs"
   },
   "devDependencies": {
     "@aws-amplify/backend": "^1.16.1",
