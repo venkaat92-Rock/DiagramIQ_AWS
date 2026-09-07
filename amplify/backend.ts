@@ -53,9 +53,12 @@ const pythonEngine = new LambdaFunction(apiStack, 'PythonAnalyzer', {
   runtime: Runtime.PYTHON_3_12,
   handler: 'index.handler',
   code: Code.fromAsset('amplify/functions/python-analyzer'),
-  // The AI passes are long: the compliance audit reasons over all 76 Auspost
-  // rules, and layout cleanup ships the whole diagram both ways.
-  timeout: Duration.seconds(300),
+  // The AI passes are long, but no single one is 5 minutes any more: the
+  // compliance audit is sliced into 20-rule batches by the caller rather than
+  // scoring all 76 in one generation. A generous timeout is not free — a
+  // wedged invocation holds a concurrency slot for its whole duration, and
+  // exhausted concurrency is what AWS answers with 429.
+  timeout: Duration.seconds(180),
   memorySize: 1024,
   environment: {
     MODEL_ID: 'us.anthropic.claude-opus-4-5-20251101-v1:0',

@@ -144,6 +144,17 @@ const origin = (u) => { try { return new URL(u).host; } catch { return u; } };
 const isUnreachable = (e) =>
   e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message || '');
 
+/** Throttling, wherever it came from.
+
+    AWS answers a throttled invocation with 429 and a body carrying `Message`,
+    not `error` — so it is not one of our own replies. Bedrock throttling
+    arrives differently: the function catches it and returns 502 with the
+    exception name in the text. Both are worth waiting out; nothing else is. */
+function isThrottled(status, message) {
+  if (status === 429) return true;
+  return status === 502 && /throttl|too many requests|rate exceeded|quota/i.test(message);
+}
+
 async function send(base, path, body) {
   const r = await fetch(base + path, {
     method: 'POST',
@@ -158,12 +169,44 @@ async function send(base, path, body) {
       throw new Error(`the gateway timed out (HTTP ${r.status}) — an API Gateway `
         + 'route cuts off at 30s and the AI passes run longer.');
     }
-    throw new Error(data.error || `HTTP ${r.status}`);
+    const message = data.error || data.Message || data.message || `HTTP ${r.status}`;
+    throw Object.assign(new Error(message), {
+      status: r.status,
+      throttled: isThrottled(r.status, message),
+    });
   }
   return data;
 }
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Backoff for a throttled call. Jittered, so several calls throttled together
+// do not all come back at the same instant and throttle each other again.
+const BACKOFF_MS = [1500, 4000, 9000];
+
 async function post(path, body) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await postOnce(path, body);
+    } catch (err) {
+      if (!err.throttled || attempt >= BACKOFF_MS.length) {
+        if (err.throttled) {
+          throw new Error(`AWS is throttling this account (HTTP ${err.status}) and it did `
+            + `not clear after ${BACKOFF_MS.length} retries. Too many Lambda invocations `
+            + 'are running at once — wait a minute for the in-flight ones to finish, or '
+            + 'pick a lighter Bedrock model (Haiku 4.5) to shorten them.');
+        }
+        throw err;
+      }
+      const delay = BACKOFF_MS[attempt] + Math.round(Math.random() * 600);
+      setStatus(`AWS throttled the request (HTTP ${err.status}). Retrying in `
+        + `${Math.round(delay / 1000)}s — attempt ${attempt + 2} of ${BACKOFF_MS.length + 1}…`, 'warn');
+      await wait(delay);
+    }
+  }
+}
+
+async function postOnce(path, body) {
   const direct = endpointFor(path);
   if (!direct) throw new Error('Backend not connected — deploy the Amplify backend first (see README).');
   const viaGateway = state.apiUrl && state.apiUrl !== direct ? state.apiUrl : '';
@@ -1024,20 +1067,43 @@ function openReviewReport(tab = 'checklist') {
     batches rather than the whole catalogue, and a slice that fails costs only
     its own rules. */
 const RULE_BATCH = 20;
+
+/** Run `fn` over `items` with at most `limit` in flight, settling like
+    Promise.allSettled so one failure costs only its own item. */
+async function pool(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        out[i] = { status: 'fulfilled', value: await fn(items[i]) };
+      } catch (reason) {
+        out[i] = { status: 'rejected', reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 async function auditInBatches(xml) {
   // The first slice reports the catalogue size; the rest then go out together.
   const first = await post('/ai-compliance', { xml, ruleOffset: 0, ruleLimit: RULE_BATCH });
   const total = first.ruleTotal || RULE_BATCH;
-  const pending = [];
-  for (let off = RULE_BATCH; off < total; off += RULE_BATCH) {
-    pending.push(post('/ai-compliance', { xml, ruleOffset: off, ruleLimit: RULE_BATCH }));
-  }
-  setStatus(`Scoring ${total} rules in ${pending.length + 1} batches, and scanning for gaps…`);
+  const offsets = [];
+  for (let off = RULE_BATCH; off < total; off += RULE_BATCH) offsets.push(off);
+  setStatus(`Scoring ${total} rules in ${offsets.length + 1} batches, and scanning for gaps…`);
 
+  // Two at a time. Firing every remaining slice at once, alongside the gap
+  // scan, is five concurrent Lambda invocations from one click — which is
+  // enough to throttle an account whose concurrency limit is small, and the
+  // slices then fail for a reason that has nothing to do with the diagram.
   const results = { ...(first.results || {}) };
   const rules = [...(first.rules || [])];
   let lost = 0;
-  for (const part of await Promise.allSettled(pending)) {
+  for (const part of await pool(offsets, 2,
+      (off) => post('/ai-compliance', { xml, ruleOffset: off, ruleLimit: RULE_BATCH }))) {
     if (part.status !== 'fulfilled') { lost += 1; continue; }
     Object.assign(results, part.value.results || {});
     rules.push(...(part.value.rules || []));

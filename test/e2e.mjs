@@ -55,9 +55,10 @@ const DISCOVERY = {
   ],
 };
 
-// 45 rules: enough that a RULE_BATCH of 20 genuinely fans out (offsets 0, 20,
-// 40) rather than fitting in the first slice, which would let a broken split
-// pass unnoticed. The first three carry the verdicts the display asserts on.
+// 85 rules: the first slice is sequential and the rest are pooled, so this
+// leaves FOUR pooled slices. With fewer, the pool has nothing to hold back and
+// the concurrency cap cannot be told apart from no cap at all. The first three
+// carry the verdicts the display asserts on.
 const NAMED = [
   { id: 'AP-CONV-01', name: 'Pool carries the process name', category: 'structure', severity: 'must', kind: 'Modeling Convention' },
   { id: 'AP-CONV-02', name: 'Every task sits in a named lane', category: 'structure', severity: 'must', kind: 'Modeling Convention' },
@@ -65,7 +66,7 @@ const NAMED = [
 ];
 const RULES = [
   ...NAMED,
-  ...Array.from({ length: 42 }, (_, i) => ({
+  ...Array.from({ length: 82 }, (_, i) => ({
     id: `AP-CHK-${String(i + 1).padStart(2, '0')}`,
     name: `Checklist item ${i + 1}`, category: 'general', severity: '',
     kind: 'Self-Review Checklist',
@@ -81,6 +82,12 @@ const seen = [];
 const bodies = {};
 const calls = {};
 const requestedUrls = [];
+const inFlight = {};
+const peakInFlight = {};
+// throttle[path] = how many more times to answer 429 before succeeding
+const throttle = {};
+// delay[path] = ms to hold the response, so overlapping calls are observable
+const delay = {};
 
 const MOCK = {
   '/notes': {
@@ -124,6 +131,9 @@ const MOCK = {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   requestedUrls.push(req.url);
+  inFlight[url.pathname] = (inFlight[url.pathname] || 0) + 1;
+  peakInFlight[url.pathname] = Math.max(peakInFlight[url.pathname] || 0, inFlight[url.pathname]);
+  res.on('finish', () => { inFlight[url.pathname] -= 1; });
   if (req.method === 'POST') {
     let raw = '';
     req.on('data', (c) => { raw += c; });
@@ -131,6 +141,12 @@ const server = http.createServer((req, res) => {
       seen.push(url.pathname);
       bodies[url.pathname] = raw ? JSON.parse(raw) : {};
       (calls[url.pathname] = calls[url.pathname] || []).push(bodies[url.pathname]);
+      if (throttle[url.pathname] > 0) {
+        throttle[url.pathname] -= 1;
+        // AWS's own shape for a throttled invocation: `Message`, not `error`.
+        res.writeHead(429, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ Message: 'Rate Exceeded.' }));
+      }
       let body = MOCK[url.pathname] ?? { error: `no mock for ${url.pathname}` };
       if (url.pathname === '/feedback') {
         const fb = String(bodies['/feedback']?.feedback || '');
@@ -152,8 +168,11 @@ const server = http.createServer((req, res) => {
       if (url.pathname === '/patch') {
         body = { xml: UPLIFTED, model: MODEL2, changes: [{ type: 'rename' }, { type: 'lane' }] };
       }
-      res.writeHead(body.error ? 404 : 200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(body));
+      const finish = () => {
+        res.writeHead(body.error ? 404 : 200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      if (delay[url.pathname]) setTimeout(finish, delay[url.pathname]); else finish();
     });
     return;
   }
@@ -329,7 +348,7 @@ await page.waitForTimeout(900);
 ok('the chip runs the review report', await page.isVisible('#insightModal'));
 await page.click('#btnInsightOk');
 const q1 = await page.textContent('#btnHealthQuality');
-ok('the chip keeps the verdict', /43\/45 verified · 2 gaps/.test(q1), q1);
+ok('the chip keeps the verdict', /83\/85 verified · 2 gaps/.test(q1), q1);
 await page.click('#btnHealthQuality');
 await page.waitForTimeout(300);
 ok('the chip reopens it', await page.isVisible('#insightModal'));
@@ -445,7 +464,7 @@ ok('failures sort to the top',
    (await page.locator('#checklistTable tbody tr').first().getAttribute('data-ok')) === 'no');
 ok('rule text is shown, not just the id',
    /Every task sits in a named lane/.test(await page.textContent('#checklistTable')));
-ok('checklist tallies', /43 verified/.test(await page.textContent('#checklistSummary')),
+ok('checklist tallies', /83 verified/.test(await page.textContent('#checklistSummary')),
    await page.textContent('#checklistSummary'));
 ok('second tab starts hidden', await page.locator('#paneModeller').isHidden());
 
@@ -516,10 +535,10 @@ ok('no path ever went out with a doubled slash',
 
 // ---- 13. The audit is sliced ---------------------------------------------
 const auditCalls = calls['/ai-compliance'] || [];
-ok('45 rules went out as 3 slices of 20', auditCalls.length === 3,
+ok('85 rules went out as 5 slices of 20', auditCalls.length === 5,
    `${auditCalls.length} calls`);
 ok('the slices cover the catalogue exactly once',
-   JSON.stringify(auditCalls.map((c) => c.ruleOffset).sort((a, b) => a - b)) === '[0,20,40]',
+   JSON.stringify(auditCalls.map((c) => c.ruleOffset).sort((a, b) => a - b)) === '[0,20,40,60,80]',
    JSON.stringify(auditCalls.map((c) => c.ruleOffset)));
 ok('every slice asks for the same batch size',
    auditCalls.every((c) => c.ruleLimit === 20));
@@ -617,6 +636,68 @@ await page.waitForTimeout(700);
 ok('an answered error is reported once, not re-sent',
    seen.filter((r) => r === '/notes').length === 1,
    `${seen.filter((r) => r === '/notes').length} attempts`);
+
+// ---- 18. Throttling is waited out, not surfaced ---------------------------
+outputsMode = 'ok';
+MOCK['/notes'] = {
+  discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx',
+  source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 },
+};
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+
+throttle['/notes'] = 2;                       // 429 twice, then succeed
+seen.length = 0;
+await page.setInputFiles('#notesInput', {
+  name: 'SOP.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(1200);
+ok('a retry is announced while it waits', /throttled the request/.test(await status()),
+   (await status()).slice(0, 80));
+await page.waitForTimeout(9000);              // 1.5s + 4s backoff, plus jitter
+ok('a throttled upload succeeds after backing off', await page.isVisible('#reviewModal'));
+ok('it really did retry', seen.filter((r) => r === '/notes').length === 3,
+   `${seen.filter((r) => r === '/notes').length} attempts`);
+ok('and the result is the real one', (await page.locator('#revTable tbody tr').count()) === 2);
+if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
+
+// ---- 19. Throttling that never clears explains itself ---------------------
+throttle['/notes'] = 99;
+await page.setInputFiles('#notesInput', {
+  name: 'SOP2.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(20000);             // 1.5 + 4 + 9s of backoff
+const thr = await status();
+ok('gives up after the backoffs', /throttling this account/.test(thr), thr.slice(0, 90));
+ok('names the cause, not just the code', /Lambda invocations/.test(thr));
+ok('and suggests something actionable', /Haiku/.test(thr));
+ok('never shows a bare HTTP 429', !/^Could not read.*HTTP 429$/.test(thr));
+throttle['/notes'] = 0;
+
+// ---- 20. The audit fan-out is bounded -------------------------------------
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+await page.setInputFiles('#bpmnInput', { name: 'p.bpmn', mimeType: 'application/xml', buffer: Buffer.from(BPMN) });
+await page.waitForTimeout(600);
+peakInFlight['/ai-compliance'] = 0;
+calls['/ai-compliance'] = [];
+// Hold each slice open long enough that overlap is real: without a delay the
+// mock answers before the next call is made and every peak reads 1, which
+// would pass whether or not the fan-out is bounded at all.
+delay['/ai-compliance'] = 300;
+await page.click('#btnCompliance');
+await page.waitForTimeout(3000);
+delay['/ai-compliance'] = 0;
+ok('rule slices do run concurrently', (peakInFlight['/ai-compliance'] || 0) >= 2,
+   `peak ${peakInFlight['/ai-compliance']}`);
+ok('but never more than two at once', (peakInFlight['/ai-compliance'] || 0) === 2,
+   `peak ${peakInFlight['/ai-compliance']} (unbounded would be 4)`);
+ok('and every slice still went out', (calls['/ai-compliance'] || []).length === 5,
+   `${(calls['/ai-compliance'] || []).length} calls`);
 
 console.log('\n--- results ---');
 let pass = true;
