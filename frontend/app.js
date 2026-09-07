@@ -2,6 +2,8 @@
 import { buildBpmn, layoutModel } from './bpmnBuilder.js';
 import { renderSvg } from './svgPreview.js';
 import { createZoom } from './zoom.js';
+import { readDocx, canReadLocally } from './docxReader.js';
+import { discoveryFromTables, discoveryToModel } from './tableToDiscovery.js';
 
 const $ = (id) => document.getElementById(id);
 let zoom;                       // preview zoom/pan controller, built on load
@@ -781,11 +783,25 @@ async function approveReview() {
         ? `Applied ${state.changes.length} change(s) from your review.`
         : 'Approved — the review made no changes to the diagram.', d.model);
     } else {
-      const d = await post('/discovery-to-bpmn', {
-        discovery, processName: discovery.process_name,
-      });
-      state.reviewXlsx = d.fileBase64 || '';
-      setXml(d.xml, `BPMN built from ${discovery.steps.length} approved step(s).`, d.model);
+      try {
+        const d = await post('/discovery-to-bpmn', {
+          discovery, processName: discovery.process_name,
+        });
+        state.reviewXlsx = d.fileBase64 || '';
+        setXml(d.xml, `BPMN built from ${discovery.steps.length} approved step(s).`, d.model);
+      } catch (err) {
+        // The builder is already in this browser — bpmnBuilder draws the same
+        // BPMN from a model, so an unreachable engine is no reason to lose the
+        // steps the reviewer just approved.
+        const model = discoveryToModel(discovery);
+        if (!model) throw err;
+        state.model = model;
+        refreshFromModel();
+        setStatus(`BPMN built here from ${discovery.steps.length} approved step(s) — `
+          + `the engine was unavailable (${err.message}) so this is a straight `
+          + 'sequence: conditions are shown as flow labels rather than gateways. '
+          + 'Run ⚙ Uplift when the engine is back.', 'warn');
+      }
     }
   } catch (e) {
     setStatus(`Could not apply the review: ${e.message}`, 'error');
@@ -860,6 +876,12 @@ async function acceptExcel(file) {
     assume it from a diagram that happens to look plausible. */
 function describeSource(src) {
   if (!src) return '';
+  if (src.mode === 'local') {
+    return `Read in your browser, without the backend — ${src.degraded}. `
+      + `Its procedure table gave ${src.steps} steps with their roles and systems. `
+      + 'The clause text, its thresholds and any figure were not read. Re-upload for '
+      + 'the full reading once the backend is available.';
+  }
   if (src.mode === 'table') {
     return `Read the procedure table directly, without the AI — ${src.degraded}. `
       + 'Steps, roles and systems are here; the conditions and thresholds written in '
@@ -905,20 +927,37 @@ async function acceptNotes(file) {
   try {
     show(await post('/notes', payload));
   } catch (e) {
-    // The AI call could not be made — throttled, or the engine unreachable.
-    // A table-only read is a different shape of request: no Bedrock, a
-    // sub-second invocation, and a far better chance of getting a concurrency
-    // slot than the minute-long one that just failed. Worth one attempt before
-    // telling the user there is nothing.
-    setStatus(`${e.message} Trying without the AI — reading the procedure table…`, 'warn');
-    try {
-      show(await post('/notes', { ...payload, mode: 'table' }));
-    } catch (e2) {
-      setStatus(`Could not read ${file.name}: ${e.message}`
-        + (/no step table/.test(e2.message) ? ' It has no procedure table to fall back on.' : ''),
-        'error');
-    }
+    // Every backend attempt has now failed. Rather than a third variation on
+    // the same request, read the document here: a .docx is a zip of XML, and
+    // the procedure table is already this schema, so it needs no network at
+    // all — no Lambda to be throttled, no endpoint to be unreachable.
+    setStatus(`${e.message} Reading the document here instead…`, 'warn');
+    const localDoc = await readLocally(file);
+    if (localDoc) { show(localDoc); return; }
+    setStatus(`Could not read ${file.name}: ${e.message}`, 'error');
   } finally { setBusy(false); }
+}
+
+/** Read the document in the browser. Returns a /notes-shaped reply, or null
+    when this file cannot be read without the backend. */
+async function readLocally(file, why = 'the backend could not be reached') {
+  if (!/\.docx$/i.test(file.name) || !canReadLocally()) return null;
+  try {
+    const doc = await readDocx(file);
+    const discovery = discoveryFromTables(doc, procName());
+    if (!discovery) return null;
+    return {
+      discovery,
+      source: {
+        mode: 'local', degraded: why, steps: discovery.steps.length,
+        headings: doc.headings, tables: doc.tables.length, figures: doc.figures,
+        skippedFigures: 0, characters: doc.text.length,
+      },
+    };
+  } catch (err) {
+    setStatus(`Could not read ${file.name} here either: ${err.message}`, 'error');
+    return null;
+  }
 }
 
 const validate = () => engine('Validating', async () => {

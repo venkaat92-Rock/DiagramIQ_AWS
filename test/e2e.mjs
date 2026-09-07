@@ -713,32 +713,74 @@ ok('but never more than two at once', (peakInFlight['/ai-compliance'] || 0) === 
 ok('and every slice still went out', (calls['/ai-compliance'] || []).length === 5,
    `${(calls['/ai-compliance'] || []).length} calls`);
 
-// ---- 21. Throttled AI falls back to the procedure table -------------------
-// The 429 case the retries cannot outlast: the invocation never starts, so a
-// server-side fallback never runs. A table-only read is a separate, far
-// cheaper request that can still get through.
-tableModeWorks = true;
+// ---- 21. Throttled, and unreadable locally too ----------------------------
+// A file that is not a .docx cannot be read in the browser, so a persistent
+// throttle has nothing to fall back on. That has to be said plainly rather
+// than left as a spinner.
 throttle['/notes'] = 99;
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+await page.setInputFiles('#notesInput', {
+  name: 'transcript.txt', mimeType: 'text/plain',
+  buffer: Buffer.from('We talked about the process for an hour.'),
+});
+await page.waitForTimeout(22000);
+const stuck = await status();
+ok('a throttle with no local fallback reports the throttle',
+   /throttling this account/.test(stuck), stuck.slice(0, 90));
+ok('and does not pretend to have a result', !(await page.isVisible('#reviewModal')));
+throttle['/notes'] = 0;
+
+// ---- 22. The real SOP, read with no backend at all ------------------------
+// Both endpoints unreachable and the real sample document: this is the path
+// that does not depend on AWS being available in any form.
+const SOP = fs.readFileSync(path.join(ROOT, '..', 'samples',
+  'SOP-PR-014 Purchase Requisition to Purchase Order.docx'));
+outputsMode = 'allDead';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 seen.length = 0;
 await page.setInputFiles('#notesInput', {
-  name: 'SOP3.docx',
+  name: 'SOP-PR-014 Purchase Requisition to Purchase Order.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  buffer: Buffer.from('PK-fake-docx'),
+  buffer: SOP,
 });
-await page.waitForTimeout(22000);
-ok('a throttled document still produces a process', await page.isVisible('#reviewModal'));
-ok('by asking for the table-only read',
-   (calls['/notes'] || []).some((c) => c.mode === 'table'),
-   JSON.stringify((calls['/notes'] || []).map((c) => c.mode || 'auto')));
-const tbl = await status();
-ok('and says the AI was not used', /without the AI/.test(tbl), tbl.slice(0, 80));
-ok('naming what is missing from it', /thresholds/.test(tbl) && /clause text/.test(tbl));
-ok('flagged as a warning, not a success', (await page.getAttribute('#status', 'data-kind')) === 'warn');
-ok('the steps are real', (await page.locator('#revTable tbody tr').count()) === 2);
-throttle['/notes'] = 0;
-tableModeWorks = false;
+await page.waitForTimeout(1500);
+ok('the real SOP opens a review grid with no backend', await page.isVisible('#reviewModal'));
+ok('all 8 procedure steps were read locally',
+   (await page.locator('#revTable tbody tr').count()) === 8,
+   `${await page.locator('#revTable tbody tr').count()} rows`);
+ok('no request reached a backend', seen.length === 0, seen.join(','));
+
+const grid = (await page.$$eval('#revTable textarea', (els) => els.map((e) => e.value)))
+  .join(' | ');
+ok('activities came from the step table', /Raise purchase requisition/.test(grid));
+ok('roles came with them', /Procurement Officer/.test(grid));
+ok('systems too', /SAP S\/4HANA/.test(grid));
+ok('the reference tables were not read as steps',
+   !/Migrated from Ariba/.test(grid) && !/Delegated Financial Authority/.test(grid));
+
+const local = await status();
+ok('it says the reading was local', /Read in your browser/.test(local), local.slice(0, 70));
+if (process.env.SHOTS) await page.screenshot({ path: '/tmp/local-grid.png' });
+ok('and what that costs', /thresholds/.test(local) && /figure were not read/.test(local));
+
+// Approve, still with nothing reachable.
+await page.click('#btnApproveBuild');
+await page.waitForTimeout(1200);
+ok('approve builds a diagram with no backend',
+   (await page.locator('#svgPane svg').count()) === 1);
+ok('the BPMN is real XML', (await page.inputValue('#xmlOut')).includes('<bpmn:definitions'));
+ok('with one task per step',
+   ((await page.inputValue('#xmlOut')).match(/<bpmn:task /g) || []).length === 8,
+   `${((await page.inputValue('#xmlOut')).match(/<bpmn:task /g) || []).length} tasks`);
+ok('lanes came from the roles',
+   (await page.inputValue('#xmlOut')).includes('name="Procurement Officer"'));
+const built = await status();
+ok('and says it was built here', /built here/.test(built), built.slice(0, 70));
+ok('naming the limitation', /flow labels rather than gateways/.test(built));
+if (process.env.SHOTS) await page.screenshot({ path: '/tmp/local-diagram.png' });
+outputsMode = 'ok';
 
 console.log('\n--- results ---');
 let pass = true;
