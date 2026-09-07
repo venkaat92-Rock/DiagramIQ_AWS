@@ -62,15 +62,19 @@ class Document:
     text: str
     figures: list[Figure] = field(default_factory=list)
     headings: int = 0
-    tables: int = 0
     skipped_figures: int = 0     # embedded, but in a format Bedrock cannot read
+    # Every table as rows of cells, kept alongside the flattened text. A
+    # procedure table is data: re-parsing it back out of the markdown, when we
+    # had the cells in hand, is a step that can only lose information.
+    tables: list = field(default_factory=list)
+    title: str = ''
 
     @property
     def summary(self) -> dict:
         """Counts worth showing the user, so they can see what was read."""
         return {
             'headings': self.headings,
-            'tables': self.tables,
+            'tables': len(self.tables),
             'figures': len(self.figures),
             'skippedFigures': self.skipped_figures,
             'characters': len(self.text),
@@ -161,8 +165,8 @@ def _collect_figure(zf, rels, rid, index, doc: Document) -> str | None:
     return marker
 
 
-def _table_lines(tbl: ET.Element) -> list:
-    """A table as pipe rows, header separated — the shape the model reads best."""
+def _table_rows(tbl: ET.Element) -> list:
+    """A table as rows of cell strings, padded to a rectangle."""
     rows = []
     for tr in tbl.findall(f'{W}tr'):
         cells = []
@@ -173,14 +177,17 @@ def _table_lines(tbl: ET.Element) -> list:
             rows.append(cells)
     if not rows:
         return []
-
     width = max(len(r) for r in rows)
+    return [r + [''] * (width - len(r)) for r in rows]
+
+
+def _table_lines(rows: list) -> list:
+    """Rows as pipe lines, header separated — the shape the model reads best."""
     out = []
     for i, r in enumerate(rows):
-        r = r + [''] * (width - len(r))
         out.append('| ' + ' | '.join(r) + ' |')
         if i == 0:
-            out.append('|' + '|'.join([' --- '] * width) + '|')
+            out.append('|' + '|'.join([' --- '] * len(r)) + '|')
     return out
 
 
@@ -224,6 +231,8 @@ def _from_docx(data: bytes) -> Document:
                 continue
             if not text:
                 continue
+            if not doc.title and not lines:
+                doc.title = text[:120]
             level = _heading_level(_style_of(el))
             if level:
                 doc.headings += 1
@@ -235,11 +244,11 @@ def _from_docx(data: bytes) -> Document:
                 lines.append(text)
 
         elif el.tag == f'{W}tbl':
-            rows = _table_lines(el)
+            rows = _table_rows(el)
             if rows:
-                doc.tables += 1
+                doc.tables.append(rows)
                 lines.append('')
-                lines.extend(rows)
+                lines.extend(_table_lines(rows))
                 lines.append('')
 
     if not any(l.strip() for l in lines):

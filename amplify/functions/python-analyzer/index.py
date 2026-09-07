@@ -457,28 +457,65 @@ def route_notes(body):
             return reply(400, {"error": str(err)})
 
     name = body.get("processName") or "Discovered Process"
-    try:
-        raw = extract_process(doc, filename=filename, model_id=body.get("modelId"))
-    except Exception as err:
-        return reply(502, {"error": f"Document analysis failed: {type(err).__name__}: {err}"})
 
-    parsed = _parse_ai_json(raw)
-    if not parsed.get("steps"):
-        return reply(422, {
-            "error": "No process steps could be read from that document. If it is a "
-                     "policy or a reference document rather than a procedure, there "
-                     "may be no sequence of steps to extract.",
-            "source": doc.summary,
-        })
+    # mode=table skips Bedrock entirely and reads the procedure table. That is
+    # the lesser reading, but it is also a sub-second invocation instead of a
+    # minute-long one — which is what makes it reachable when the account is out
+    # of Lambda concurrency and the long call cannot get a slot at all.
+    want = (body.get("mode") or "auto").lower()
+    if want not in ("auto", "ai", "table"):
+        return reply(400, {"error": "mode must be auto, ai or table."})
+
+    # The AI pass first: it reads the clause text, so it recovers the thresholds
+    # and conditions a table does not carry.
+    parsed, mode, degraded = None, "ai", ""
+    if want == "table":
+        degraded = "the AI pass was skipped at your request"
+    else:
+        try:
+            parsed = _parse_ai_json(extract_process(
+                doc, filename=filename, model_id=body.get("modelId")))
+            if not parsed.get("steps"):
+                parsed = None
+                degraded = "the AI pass found no steps in it"
+        except Exception as err:
+            degraded = f"the AI pass failed ({type(err).__name__})"
+            if want == "ai":
+                return reply(502, {"error": f"Document analysis failed: {err}",
+                                   "source": doc.summary})
+
+    # Falling back to the procedure table rather than returning nothing. An SOP
+    # usually states its steps twice — once in clauses, once in a table — and
+    # the table is already this schema. It is the lesser reading and the caller
+    # is told so, but it is a working diagram instead of a dead end when
+    # Bedrock is throttled or unavailable.
+    if parsed is None:
+        from diagramiq.table_to_process import discovery_from_tables
+
+        parsed = discovery_from_tables(doc, default_name=body.get("processName") or "")
+        if parsed is None:
+            return reply(502 if "failed" in degraded else 422, {
+                "error": (
+                    f"Could not read a process from that document — {degraded}, and it "
+                    "has no step table to fall back on. A procedure table with an "
+                    "Activity column and a role or system column can be read without "
+                    "the AI."),
+                "source": doc.summary,
+            })
+        mode = "table"
+
     parsed.setdefault("process_name", name)
 
     path = os.path.join(tempfile.gettempdir(), "discovery.xlsx")
     try:
         save_excel_from_ai_response(parsed, path)
         with open(path, "rb") as fh:
+            source = dict(doc.summary, mode=mode)
+            if mode == "table":
+                source["degraded"] = degraded
             return reply(200, {
                 "discovery": parsed,
-                "source": doc.summary,
+                "source": source,
                 "fileBase64": base64.b64encode(fh.read()).decode(),
                 "filename": f"{name}.discovery.xlsx",
             })
