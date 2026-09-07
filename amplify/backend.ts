@@ -11,6 +11,7 @@ import {
   Code,
   FunctionUrlAuthType,
   Function as LambdaFunction,
+  HttpMethod as FnUrlMethod,
   Runtime,
 } from 'aws-cdk-lib/aws-lambda';
 import { bedrockProxy } from './functions/bedrock-proxy/resource';
@@ -112,12 +113,28 @@ for (const path of [
 // applies. The gateway keeps serving the fast, deterministic routes, and the
 // frontend falls back to it if these outputs are missing.
 //
-// CORS is deliberately left off the URL configuration: both handlers already
-// emit CORS headers for the gateway's sake, and a URL-level configuration
-// would be a second source of the same headers. One source, answered by the
-// function's own OPTIONS branch, is a thing that can be reasoned about.
-const engineUrl = pythonEngine.addFunctionUrl({ authType: FunctionUrlAuthType.NONE });
-const aiUrl = fn.addFunctionUrl({ authType: FunctionUrlAuthType.NONE });
+// CORS is declared here, exactly as it is on the HTTP API above. A browser
+// sends a preflight before any JSON POST, and an endpoint that does not answer
+// it fails the request before the function is ever reached — which surfaces as
+// "Failed to fetch", with no status code and nothing in the function's log.
+//
+// An earlier version left this off and relied on the handlers' own CORS
+// headers. That was wrong, and the evidence was already in this file: the HTTP
+// API has always declared CORS *and* had handlers that return the same
+// headers, and that combination has worked from the start.
+const urlCors = {
+  allowedOrigins: ['*'],
+  allowedMethods: [FnUrlMethod.POST],
+  allowedHeaders: ['content-type'],
+};
+const engineUrl = pythonEngine.addFunctionUrl({
+  authType: FunctionUrlAuthType.NONE,
+  cors: urlCors,
+});
+const aiUrl = fn.addFunctionUrl({
+  authType: FunctionUrlAuthType.NONE,
+  cors: urlCors,
+});
 
 // Expose the endpoints to the frontend via amplify_outputs.json.
 backend.addOutput({
