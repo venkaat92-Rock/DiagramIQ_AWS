@@ -8,6 +8,9 @@ import path from 'node:path';
 const ROOT = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'frontend');
 const PORT = 5205;
 const ORIGIN = `http://localhost:${PORT}`;
+const DEAD_A = 'http://127.0.0.1:5906';       // nothing listens here
+const DEAD_B = 'http://127.0.0.1:5907';
+let outputsMode = 'ok';
 const BPMN = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" targetNamespace="http://e.com">
 <bpmn:process id="P1"><bpmn:task id="t1" name="Validate request"/></bpmn:process></bpmn:definitions>`;
@@ -158,11 +161,14 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     // Trailing slashes on purpose: Lambda Function URLs carry one, and the
     // frontend has to trim it or every path doubles its separator.
-    return res.end(JSON.stringify({ custom: {
-      diagramiqApiUrl: ORIGIN,
-      diagramiqEngineUrl: `${ORIGIN}/`,
-      diagramiqAiUrl: `${ORIGIN}/`,
-    } }));
+    // DEAD_* point at ports nothing listens on, which is what an endpoint
+    // without a CORS configuration looks like to fetch: no status, no body.
+    const custom = {
+      ok:          { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/` },
+      deadEngine:  { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
+      allDead:     { diagramiqApiUrl: DEAD_B, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
+    }[outputsMode];
+    return res.end(JSON.stringify({ custom }));
   }
   if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
   const file = path.join(ROOT, url.pathname === '/' ? 'index.html' : url.pathname);
@@ -177,7 +183,11 @@ const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromi
 const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
-page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('console', (m) => {
+  // Sections 15-17 point the app at ports nothing listens on, so a refused
+  // resource load is the test working. An uncaught exception never is.
+  if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text());
+});
 const downloads = [];
 page.on('download', (d) => downloads.push(d.suggestedFilename()));
 await page.goto(`${ORIGIN}/`);
@@ -550,6 +560,63 @@ await page.waitForTimeout(400);
 ok('an Excel upload clears it too', await page.evaluate(() =>
   !document.getElementById('imgPane').classList.contains('has-image')));
 await page.click('#btnReviewCancel');
+
+// ---- 15. An unreachable endpoint falls back instead of dying ---------------
+// This is the "Failed to fetch" case: a Lambda Function URL with no CORS
+// configuration never answers the preflight, so the request fails before the
+// function is reached — no status code, nothing in the log.
+outputsMode = 'deadEngine';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+seen.length = 0;
+MOCK['/notes'].source = { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 };
+await page.setInputFiles('#notesInput', {
+  name: 'SOP.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(900);
+ok('an unreachable engine still gets the work done via the gateway',
+   await page.isVisible('#reviewModal'));
+ok('and the request really did arrive', seen.includes('/notes'), seen.join(','));
+ok('the fallback is announced alongside the result, not instead of it',
+   /Read 5 tables/.test(await status()) && /API gateway/.test(await status()),
+   (await status()).slice(-95));
+ok('with the 30s ceiling spelled out', /30s/.test(await status()));
+ok('and flagged as a warning', (await page.getAttribute('#status', 'data-kind')) === 'warn');
+// Guarded: a failed assertion above must not abort the run before results print.
+if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
+
+// ---- 16. Both endpoints down names both, not "Failed to fetch" ------------
+outputsMode = 'allDead';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+await page.setInputFiles('#notesInput', {
+  name: 'SOP.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(1200);
+const dead = await status();
+ok('a total outage names both endpoints', /5906/.test(dead) && /5907/.test(dead), dead.slice(0, 110));
+ok('and points at the likely cause', /CORS/.test(dead));
+ok('"Failed to fetch" is never shown raw', !/Failed to fetch/.test(dead));
+
+// ---- 17. A real error from the function is not retried --------------------
+outputsMode = 'ok';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+delete MOCK['/notes'];                         // now answers 404 with a body
+seen.length = 0;
+await page.setInputFiles('#notesInput', {
+  name: 'SOP.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(700);
+ok('an answered error is reported once, not re-sent',
+   seen.filter((r) => r === '/notes').length === 1,
+   `${seen.filter((r) => r === '/notes').length} attempts`);
 
 console.log('\n--- results ---');
 let pass = true;

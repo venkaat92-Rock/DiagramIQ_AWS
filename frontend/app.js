@@ -45,10 +45,16 @@ function initModelPicker() {
   });
 }
 
+const DEGRADED_NOTE = ' · Running through the API gateway — the direct endpoint is '
+  + 'not responding, so the longer AI passes may time out at 30s.';
+
 function setStatus(msg, kind = 'info') {
   const el = $('status');
-  el.textContent = msg;
-  el.dataset.kind = kind;
+  // Degradation outlives any one message: the next thing that happens must not
+  // scroll away the reason half the app is about to behave differently.
+  const degraded = state.degraded && kind !== 'error';
+  el.textContent = degraded ? msg + DEGRADED_NOTE : msg;
+  el.dataset.kind = degraded ? 'warn' : kind;
 }
 
 const ENGINE_BTNS = ['btnValidate', 'btnUplift', 'btnAiUplift', 'btnAiNaming',
@@ -130,9 +136,15 @@ function endpointFor(path) {
   return direct || state.apiUrl;
 }
 
-async function post(path, body) {
-  const base = endpointFor(path);
-  if (!base) throw new Error('Backend not connected — deploy the Amplify backend first (see README).');
+const origin = (u) => { try { return new URL(u).host; } catch { return u; } };
+
+/** A failure before any response: DNS, connection refused, or a CORS preflight
+    the endpoint did not answer. `fetch` reports all three the same way, with no
+    status code — which is why the message has to name what was being called. */
+const isUnreachable = (e) =>
+  e instanceof TypeError || /failed to fetch|networkerror|load failed/i.test(e.message || '');
+
+async function send(base, path, body) {
   const r = await fetch(base + path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -144,12 +156,37 @@ async function post(path, body) {
       // No error body means this never reached the function: the gateway gave
       // up while the Lambda was still working.
       throw new Error(`the gateway timed out (HTTP ${r.status}) — an API Gateway `
-        + 'route cuts off at 30s and the AI passes run longer. Redeploy so the '
-        + 'Function URLs in amplify_outputs.json are picked up.');
+        + 'route cuts off at 30s and the AI passes run longer.');
     }
     throw new Error(data.error || `HTTP ${r.status}`);
   }
   return data;
+}
+
+async function post(path, body) {
+  const direct = endpointFor(path);
+  if (!direct) throw new Error('Backend not connected — deploy the Amplify backend first (see README).');
+  const viaGateway = state.apiUrl && state.apiUrl !== direct ? state.apiUrl : '';
+
+  try {
+    return await send(direct, path, body);
+  } catch (err) {
+    // Only a *reachability* failure falls back. An error the function itself
+    // returned is a real answer and re-sending it elsewhere would just repeat
+    // the work and the failure.
+    if (!viaGateway || !isUnreachable(err)) throw err;
+
+    try {
+      const data = await send(viaGateway, path, body);
+      state.degraded = true;
+      return data;
+    } catch (err2) {
+      if (!isUnreachable(err2)) throw err2;
+      throw new Error(`the backend could not be reached. Neither ${origin(direct)} nor `
+        + `${origin(viaGateway)} answered — this is usually a missing CORS `
+        + 'configuration on the endpoint, or a backend that has not finished deploying.');
+    }
+  }
 }
 
 /* ---------- engine helpers ------------------------------------------------- */
