@@ -88,6 +88,7 @@ const peakInFlight = {};
 const throttle = {};
 // delay[path] = ms to hold the response, so overlapping calls are observable
 const delay = {};
+let tableModeWorks = false;
 
 const MOCK = {
   '/notes': {
@@ -141,6 +142,17 @@ const server = http.createServer((req, res) => {
       seen.push(url.pathname);
       bodies[url.pathname] = raw ? JSON.parse(raw) : {};
       (calls[url.pathname] = calls[url.pathname] || []).push(bodies[url.pathname]);
+      // A table-only read is a different request: it never calls Bedrock, so
+      // the throttling being simulated does not apply to it.
+      const notesMode = url.pathname === '/notes' ? bodies['/notes']?.mode : undefined;
+      if (notesMode === 'table') {
+        res.writeHead(tableModeWorks ? 200 : 422, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify(tableModeWorks ? {
+          discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'x.xlsx',
+          source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182,
+                    mode: 'table', degraded: 'the AI pass failed (ThrottlingException)' },
+        } : { error: 'Could not read a process — it has no step table to fall back on.' }));
+      }
       if (throttle[url.pathname] > 0) {
         throttle[url.pathname] -= 1;
         // AWS's own shape for a throttled invocation: `Message`, not `error`.
@@ -627,15 +639,17 @@ await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 delete MOCK['/notes'];                         // now answers 404 with a body
 seen.length = 0;
+calls['/notes'] = [];
 await page.setInputFiles('#notesInput', {
   name: 'SOP.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
 });
 await page.waitForTimeout(700);
-ok('an answered error is reported once, not re-sent',
-   seen.filter((r) => r === '/notes').length === 1,
-   `${seen.filter((r) => r === '/notes').length} attempts`);
+// The AI request must not be re-sent; the table-only retry that follows is a
+// different request by design, so it is excluded rather than counted.
+const aiAttempts = (calls['/notes'] || []).filter((c) => c.mode !== 'table').length;
+ok('an answered error is reported once, not re-sent', aiAttempts === 1, `${aiAttempts} attempts`);
 
 // ---- 18. Throttling is waited out, not surfaced ---------------------------
 outputsMode = 'ok';
@@ -698,6 +712,33 @@ ok('but never more than two at once', (peakInFlight['/ai-compliance'] || 0) === 
    `peak ${peakInFlight['/ai-compliance']} (unbounded would be 4)`);
 ok('and every slice still went out', (calls['/ai-compliance'] || []).length === 5,
    `${(calls['/ai-compliance'] || []).length} calls`);
+
+// ---- 21. Throttled AI falls back to the procedure table -------------------
+// The 429 case the retries cannot outlast: the invocation never starts, so a
+// server-side fallback never runs. A table-only read is a separate, far
+// cheaper request that can still get through.
+tableModeWorks = true;
+throttle['/notes'] = 99;
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+seen.length = 0;
+await page.setInputFiles('#notesInput', {
+  name: 'SOP3.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(22000);
+ok('a throttled document still produces a process', await page.isVisible('#reviewModal'));
+ok('by asking for the table-only read',
+   (calls['/notes'] || []).some((c) => c.mode === 'table'),
+   JSON.stringify((calls['/notes'] || []).map((c) => c.mode || 'auto')));
+const tbl = await status();
+ok('and says the AI was not used', /without the AI/.test(tbl), tbl.slice(0, 80));
+ok('naming what is missing from it', /thresholds/.test(tbl) && /clause text/.test(tbl));
+ok('flagged as a warning, not a success', (await page.getAttribute('#status', 'data-kind')) === 'warn');
+ok('the steps are real', (await page.locator('#revTable tbody tr').count()) === 2);
+throttle['/notes'] = 0;
+tableModeWorks = false;
 
 console.log('\n--- results ---');
 let pass = true;

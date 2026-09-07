@@ -860,6 +860,11 @@ async function acceptExcel(file) {
     assume it from a diagram that happens to look plausible. */
 function describeSource(src) {
   if (!src) return '';
+  if (src.mode === 'table') {
+    return `Read the procedure table directly, without the AI — ${src.degraded}. `
+      + 'Steps, roles and systems are here; the conditions and thresholds written in '
+      + 'the clause text are not. Re-upload when the AI is available for the full reading.';
+  }
   const bits = [];
   if (src.tables) bits.push(`${src.tables} table${src.tables === 1 ? '' : 's'}`);
   if (src.figures) bits.push(`${src.figures} figure${src.figures === 1 ? '' : 's'}`);
@@ -882,20 +887,37 @@ async function acceptNotes(file) {
   clearImage();
   setBusy(true);
   setStatus(`AI is reading ${file.name}… (10–60s)`);
-  try {
-    const data = await post('/notes', {
-      fileBase64: await fileToB64(file),
-      filename: file.name,
-      processName: procName(),
-      modelId: currentModelId(),
-    });
+  const payload = {
+    fileBase64: await fileToB64(file),
+    filename: file.name,
+    processName: procName(),
+    modelId: currentModelId(),
+  };
+
+  const show = (data) => {
     state.reviewXlsx = data.fileBase64 || '';
     const note = describeSource(data.source);
     openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
     setStatus(`${note} Check the steps against the document, then Approve to build the BPMN.`
-      .trim(), data.source?.skippedFigures ? 'warn' : 'info');
+      .trim(), (data.source?.skippedFigures || data.source?.mode === 'table') ? 'warn' : 'info');
+  };
+
+  try {
+    show(await post('/notes', payload));
   } catch (e) {
-    setStatus(`Could not read ${file.name}: ${e.message}`, 'error');
+    // The AI call could not be made — throttled, or the engine unreachable.
+    // A table-only read is a different shape of request: no Bedrock, a
+    // sub-second invocation, and a far better chance of getting a concurrency
+    // slot than the minute-long one that just failed. Worth one attempt before
+    // telling the user there is nothing.
+    setStatus(`${e.message} Trying without the AI — reading the procedure table…`, 'warn');
+    try {
+      show(await post('/notes', { ...payload, mode: 'table' }));
+    } catch (e2) {
+      setStatus(`Could not read ${file.name}: ${e.message}`
+        + (/no step table/.test(e2.message) ? ' It has no procedure table to fall back on.' : ''),
+        'error');
+    }
   } finally { setBusy(false); }
 }
 
