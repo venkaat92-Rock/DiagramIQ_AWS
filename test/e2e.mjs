@@ -80,7 +80,10 @@ const calls = {};
 const requestedUrls = [];
 
 const MOCK = {
-  '/notes': { discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx' },
+  '/notes': {
+    discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx',
+    source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 },
+  },
   '/excel-to-discovery': { discovery: DISCOVERY },
   '/discovery-xlsx': { fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx' },
   '/discovery-to-bpmn': { xml: BPMN, model: MODEL, fileBase64: XLSX_B64, filename: 'x.xlsx' },
@@ -188,7 +191,10 @@ ok('rollback disabled on a blank page', await page.isDisabled('#btnRollback'),
    await page.textContent('#btnRollback'));
 ok('no checks strip before a diagram exists', !(await page.isVisible('#health')));
 
-// ---- 1. Notes accepts Word ------------------------------------------------
+// ---- 1. Notes / Document accepts Word ------------------------------------
+ok('the input is labelled for documents, not just notes',
+   /Notes \/ Document/.test(await page.textContent('label:has(#notesInput)')),
+   (await page.textContent('label:has(#notesInput)')).trim());
 ok('notes accepts .docx/.pdf',
    (await page.getAttribute('#notesInput', 'accept')).includes('.docx'),
    await page.getAttribute('#notesInput', 'accept'));
@@ -202,6 +208,8 @@ await page.waitForTimeout(400);
 ok('Word file sent to /notes as base64',
    bodies['/notes']?.filename === 'meeting.docx' && !!bodies['/notes']?.fileBase64);
 ok('review popup opened', await page.isVisible('#reviewModal'));
+ok('what was read is reported back',
+   /Read 5 tables, 1 figure, 8 sections/.test(await status()), await status());
 ok('grid populated', (await page.locator('#revTable tbody tr').count()) === 2,
    `${await page.locator('#revTable tbody tr').count()} rows`);
 ok('metadata populated', (await page.inputValue('#revName')) === 'Procurement intake');
@@ -515,12 +523,18 @@ await page.waitForTimeout(350);
 ok('image pane shows the upload', await page.evaluate(() =>
   document.getElementById('imgPane').classList.contains('has-image')));
 
+// Word embeds pasted Office drawings as emf/wmf, which the model cannot read.
+// The user has to be told that, or a missing branch looks like a bad extraction.
+MOCK['/notes'].source = { headings: 3, tables: 1, figures: 0, skippedFigures: 2, characters: 900 };
 await page.setInputFiles('#notesInput', {
   name: 'transcript.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
 });
 await page.waitForTimeout(450);
+ok('unreadable figures are called out', /format the AI cannot read/.test(await status()),
+   (await status()).slice(-70));
+ok('and flagged as a warning', (await page.getAttribute('#status', 'data-kind')) === 'warn');
 ok('a transcription upload clears the stale image', await page.evaluate(() =>
   !document.getElementById('imgPane').classList.contains('has-image')));
 ok('and the img element carries no src', await page.evaluate(() =>

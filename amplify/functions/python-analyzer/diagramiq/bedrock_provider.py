@@ -52,3 +52,32 @@ def call_bedrock(
     )
     blocks = resp.get("output", {}).get("message", {}).get("content", [])
     return "".join(b.get("text", "") for b in blocks)
+
+
+def call_bedrock_with_images(
+    system_prompt: str,
+    user_msg: str,
+    images: list | None = None,
+    max_tokens: int = 8000,
+    model_id: str | None = None,
+) -> str:
+    """Same call, with document figures attached.
+
+    `images` is a list of (bytes, format) where format is one Converse accepts:
+    png, jpeg, gif or webp. Images go first in the content list — a diagram is
+    context for the instruction that follows it, not an afterthought — and an
+    empty list makes this identical to call_bedrock.
+    """
+    content = []
+    for data, fmt in (images or []):
+        content.append({"image": {"format": fmt, "source": {"bytes": data}}})
+    content.append({"text": user_msg})
+
+    resp = _get_client().converse(
+        modelId=model_id or DEFAULT_MODEL,
+        system=[{"text": system_prompt}],
+        messages=[{"role": "user", "content": content}],
+        inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
+    )
+    blocks = resp.get("output", {}).get("message", {}).get("content", [])
+    return "".join(b.get("text", "") for b in blocks)

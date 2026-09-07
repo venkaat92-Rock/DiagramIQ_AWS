@@ -775,6 +775,28 @@ async function acceptExcel(file) {
   } finally { setBusy(false); }
 }
 
+/** What the document turned out to contain, in a phrase — so the reader can
+    see the step table and the embedded flowchart were picked up, rather than
+    assume it from a diagram that happens to look plausible. */
+function describeSource(src) {
+  if (!src) return '';
+  const bits = [];
+  if (src.tables) bits.push(`${src.tables} table${src.tables === 1 ? '' : 's'}`);
+  if (src.figures) bits.push(`${src.figures} figure${src.figures === 1 ? '' : 's'}`);
+  if (src.headings) bits.push(`${src.headings} sections`);
+  if (!bits.length) return '';
+  let out = `Read ${bits.join(', ')}.`;
+  if (src.skippedFigures) {
+    // Word embeds pasted Office drawings as emf/wmf, which the model cannot read.
+    out += ` ${src.skippedFigures} figure(s) were in a format the AI cannot read`
+         + ' — export those as PNG and use ⬆ Image if they matter.';
+  }
+  return out;
+}
+
+/** ⬆ Notes / Document — a transcript or an SOP, as .txt, .md, .docx or .pdf.
+    Word documents keep their headings, numbered clauses, tables and figures,
+    and the figures go to the model with the text. */
 async function acceptNotes(file) {
   if (!file) return;
   clearImage();
@@ -785,12 +807,15 @@ async function acceptNotes(file) {
       fileBase64: await fileToB64(file),
       filename: file.name,
       processName: procName(),
+      modelId: currentModelId(),
     });
     state.reviewXlsx = data.fileBase64 || '';
+    const note = describeSource(data.source);
     openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
-    setStatus('Review and edit the steps, then Approve to build the BPMN.');
+    setStatus(`${note} Check the steps against the document, then Approve to build the BPMN.`
+      .trim(), data.source?.skippedFigures ? 'warn' : 'info');
   } catch (e) {
-    setStatus(`Notes analysis failed: ${e.message}`, 'error');
+    setStatus(`Could not read ${file.name}: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
 
