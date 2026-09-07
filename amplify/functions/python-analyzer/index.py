@@ -29,7 +29,8 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
 
 from diagramiq.bpmn_parser import parse_bpmn_xml
-from diagramiq.doc_text import UnreadableDocument, extract_text
+from diagramiq import doc_text as DocText
+from diagramiq.doc_text import UnreadableDocument, extract_document
 from diagramiq.preview_model import model_from_bpmn
 from diagramiq.bpmn_validator import validate_bpmn
 from diagramiq.local_uplift import uplift_local
@@ -428,49 +429,56 @@ def route_ai_modeller_inputs(body):
 
 
 def route_notes(body):
-    """⬆ Notes: .txt / .md / .docx / .pdf -> Process Discovery data.
+    """⬆ Notes / Document: .txt / .md / .docx / .pdf -> Process Discovery data.
 
-    Returns the discovery model for the in-browser review grid, plus the .xlsx
-    so the reviewer can export it. The file is read server-side, so Word and PDF
-    work the same way plain text does.
+    Handles a transcript and an SOP through the same door. A .docx is walked in
+    document order so its headings, numbered clauses, tables and embedded
+    figures survive, and the figures are sent to the model with the text — an
+    SOP's flow is often drawn rather than written.
+
+    Returns the discovery model for the in-browser review grid, the .xlsx so the
+    reviewer can export it, and a summary of what was actually read, so the user
+    can see the tables and figures were picked up rather than take it on trust.
     """
-    from diagramiq.transcription_to_excel import (
-        _parse_ai_json,
-        build_excel_from_transcription,
-        save_excel_from_ai_response,
-    )
+    from diagramiq.document_to_process import extract_process
+    from diagramiq.transcription_to_excel import _parse_ai_json, save_excel_from_ai_response
 
+    filename = body.get("filename") or "notes.txt"
     text = body.get("text")
-    if not text:
+    if text:
+        doc = DocText.Document(text=text)
+    else:
         b64 = body.get("fileBase64")
         if not b64:
             return reply(400, {"error": "text or fileBase64 is required."})
         try:
-            text = extract_text(base64.b64decode(b64), body.get("filename") or "notes.txt")
+            doc = extract_document(base64.b64decode(b64), filename)
         except UnreadableDocument as err:
             return reply(400, {"error": str(err)})
 
     name = body.get("processName") or "Discovered Process"
-    out = {}
-    build_excel_from_transcription(
-        text=text,
-        process_name=name,
-        provider="bedrock",
-        api_key="",
-        on_complete=lambda raw: out.__setitem__("raw", raw),
-        on_error=lambda m: out.__setitem__("error", m),
-    )
-    if "error" in out:
-        return reply(502, {"error": out["error"]})
+    try:
+        raw = extract_process(doc, filename=filename, model_id=body.get("modelId"))
+    except Exception as err:
+        return reply(502, {"error": f"Document analysis failed: {type(err).__name__}: {err}"})
 
-    parsed = _parse_ai_json(out.get("raw", ""))
+    parsed = _parse_ai_json(raw)
+    if not parsed.get("steps"):
+        return reply(422, {
+            "error": "No process steps could be read from that document. If it is a "
+                     "policy or a reference document rather than a procedure, there "
+                     "may be no sequence of steps to extract.",
+            "source": doc.summary,
+        })
     parsed.setdefault("process_name", name)
+
     path = os.path.join(tempfile.gettempdir(), "discovery.xlsx")
     try:
         save_excel_from_ai_response(parsed, path)
         with open(path, "rb") as fh:
             return reply(200, {
                 "discovery": parsed,
+                "source": doc.summary,
                 "fileBase64": base64.b64encode(fh.read()).decode(),
                 "filename": f"{name}.discovery.xlsx",
             })
