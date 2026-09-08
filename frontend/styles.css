@@ -213,6 +213,19 @@ button.ghost.small { background: #e6ebf1; color: var(--ink); margin-top: 10px; }
 #btnApproveBuild { background: var(--ok); color: #fff; }
 .muted { color: #7d8b9a; font-size: 12.5px; }
 
+/* A reading that is not the full one says so where the steps are, not only in
+   a status line that the next message overwrites. The reviewer is about to
+   approve this: what is missing from it has to be in front of them. */
+.degraded-note {
+  color: #8a5a00;
+  background: #fff4e0;
+  border: 1px solid #f0d5a8;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12.5px;
+}
+.degraded-note[hidden] { display: none !important; }
+
 /* Review grid */
 .meta-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));

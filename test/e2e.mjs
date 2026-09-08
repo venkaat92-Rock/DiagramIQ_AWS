@@ -800,6 +800,10 @@ ok('the reference tables were not read as steps',
 
 const local = await status();
 ok('it says the reading was local', /Read in your browser/.test(local), local.slice(0, 70));
+ok('and the grid itself is marked as the lesser reading',
+   await page.isVisible('#revDegraded')
+   && /no clause text/.test(await page.textContent('#revDegraded')),
+   await page.textContent('#revDegraded'));
 if (process.env.SHOTS) await page.screenshot({ path: '/tmp/local-grid.png' });
 ok('and what that costs', /thresholds/.test(local) && /figure were not read/.test(local));
 
@@ -819,6 +823,45 @@ ok('and says it was built here', /built here/.test(built), built.slice(0, 70));
 ok('naming the limitation', /flow labels rather than gateways/.test(built));
 if (process.env.SHOTS) await page.screenshot({ path: '/tmp/local-diagram.png' });
 outputsMode = 'ok';
+
+// ---- 22b. A lesser SOP reading is marked, and can be re-asked -------------
+// The complaint this exists for: "the SOP output is not as good as before".
+// The prompt had not changed — the fallback was answering instead of the AI
+// pass, and a status line was the only thing that said so.
+outputsMode = 'ok';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+MOCK['/sop'] = {
+  discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'x.xlsx',
+  source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182,
+            mode: 'table', degraded: 'the AI pass failed (ThrottlingException)' },
+};
+calls['/sop'] = [];
+await page.setInputFiles('#sopInput', {
+  name: 'SOP-PR-014 Purchase Requisition to Purchase Order.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: SOP,
+});
+await page.waitForTimeout(700);
+ok('a table-only reading is marked in the grid', await page.isVisible('#revDegraded'));
+ok('and says what it is missing', /no thresholds/.test(await page.textContent('#revDegraded')),
+   await page.textContent('#revDegraded'));
+ok('with a way to ask for the full reading', await page.isVisible('#btnRetryAi'));
+
+MOCK['/sop'] = {
+  discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'x.xlsx',
+  source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182,
+            mode: 'ai' },
+};
+await page.click('#btnRetryAi');
+await page.waitForTimeout(700);
+ok('the retry asks for the AI pass with no fallback',
+   (calls['/sop'] || []).slice(-1)[0]?.mode === 'ai', JSON.stringify((calls['/sop'] || []).map((c) => c.mode)));
+ok('and it did not need a re-upload', (calls['/sop'] || []).length === 2,
+   `${(calls['/sop'] || []).length} calls`);
+ok('the mark is gone once the full reading arrives', !(await page.isVisible('#revDegraded')));
+ok('and so is the retry', !(await page.isVisible('#btnRetryAi')));
+if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
 
 // ---- 23. The degraded banner clears when the endpoint recovers ------------
 // It is sticky on purpose, so one message cannot scroll it away — but a banner
