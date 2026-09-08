@@ -47,15 +47,15 @@ function initModelPicker() {
   });
 }
 
-const DEGRADED_NOTE = ' · Running through the API gateway — the direct endpoint is '
-  + 'not responding, so the longer AI passes may time out at 30s.';
-
 function setStatus(msg, kind = 'info') {
   const el = $('status');
   // Degradation outlives any one message: the next thing that happens must not
-  // scroll away the reason half the app is about to behave differently.
+  // scroll away the reason half the app is about to behave differently. It is
+  // cleared the moment a direct call succeeds again.
   const degraded = state.degraded && kind !== 'error';
-  el.textContent = degraded ? msg + DEGRADED_NOTE : msg;
+  const note = ' · Running through the API gateway, which cuts off at 30s, so the '
+    + `longer AI passes may fail. The direct endpoint returned — ${state.degradedWhy}`;
+  el.textContent = degraded ? msg + note : msg;
   el.dataset.kind = degraded ? 'warn' : kind;
 }
 
@@ -224,7 +224,16 @@ async function postOnce(path, body) {
   const viaGateway = state.apiUrl && state.apiUrl !== direct ? state.apiUrl : '';
 
   try {
-    return await send(direct, path, body);
+    const data = await send(direct, path, body);
+    // A direct call getting through ends the degraded state. Without this the
+    // banner outlives the outage it described, and every later message reads
+    // as a warning — which is worse than not showing it at all, because it
+    // points the reader at a problem that is no longer there.
+    if (state.degraded) {
+      state.degraded = false;
+      state.degradedWhy = '';
+    }
+    return data;
   } catch (err) {
     // Only a *reachability* failure falls back. An error the function itself
     // returned is a real answer and re-sending it elsewhere would just repeat
@@ -234,6 +243,9 @@ async function postOnce(path, body) {
     try {
       const data = await send(viaGateway, path, body);
       state.degraded = true;
+      // Kept verbatim: "not responding" is a symptom, and the underlying
+      // error is the only thing that says which of a dozen causes it was.
+      state.degradedWhy = `${path}: ${err.message}`;
       return data;
     } catch (err2) {
       if (!isUnreachable(err2)) throw err2;
@@ -1297,6 +1309,12 @@ async function approveDownload() {
 /* ---------- wire up -------------------------------------------------------- */
 window.addEventListener('DOMContentLoaded', () => {
   zoom = createZoom({ pane: $('svgPane'), label: $('zoomLabel') });
+  // Point every endpoint at one origin. Exposed for the browser test, which
+  // needs to restore a failed endpoint without reloading — a reload would
+  // reset the degraded state it is checking.
+  window.__diagramiqSetEndpoints = (base) => {
+    state.apiUrl = state.engineUrl = state.aiUrl = trimSlash(base);
+  };
   loadOutputs();
   initModelPicker();
   syncRollback();
