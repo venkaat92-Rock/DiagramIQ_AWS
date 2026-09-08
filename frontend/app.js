@@ -171,7 +171,12 @@ async function send(base, path, body) {
       throw new Error(`the gateway timed out (HTTP ${r.status}) — an API Gateway `
         + 'route cuts off at 30s and the AI passes run longer.');
     }
-    const message = data.error || data.Message || data.message || `HTTP ${r.status}`;
+    // AWS puts the useful half in `Reason`, not `Message`: a throttled call
+    // says "Rate Exceeded." either way, but only Reason distinguishes an
+    // account at its limit from a function reserved at zero — which is a
+    // different problem with a different fix, and was thrown away here once.
+    const aws = [data.Reason, data.Message || data.message].filter(Boolean).join(' — ');
+    const message = data.error || aws || `HTTP ${r.status}`;
     throw Object.assign(new Error(message), {
       status: r.status,
       throttled: isThrottled(r.status, message),
@@ -193,10 +198,15 @@ async function post(path, body) {
     } catch (err) {
       if (!err.throttled || attempt >= BACKOFF_MS.length) {
         if (err.throttled) {
-          throw new Error(`AWS is throttling this account (HTTP ${err.status}) and it did `
-            + `not clear after ${BACKOFF_MS.length} retries. Too many Lambda invocations `
-            + 'are running at once — wait a minute for the in-flight ones to finish, or '
-            + 'pick a lighter Bedrock model (Haiku 4.5) to shorten them.');
+          const reserved = /ReservedFunctionConcurrentInvocationLimitExceeded/.test(err.message);
+          throw new Error(`AWS refused the request (HTTP ${err.status}: ${err.message}) and it `
+            + `did not clear after ${BACKOFF_MS.length} retries. `
+            + (reserved
+              ? 'That reason means the Lambda is reserved at zero concurrent executions — '
+                + 'it is switched off, not busy. Clear it with: aws lambda '
+                + 'delete-function-concurrency --function-name diagramiq-python-analyzer'
+              : 'Too many invocations are running at once — wait for the in-flight ones '
+                + 'to finish, or pick a lighter Bedrock model (Haiku 4.5) to shorten them.'));
         }
         throw err;
       }

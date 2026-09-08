@@ -155,9 +155,14 @@ const server = http.createServer((req, res) => {
       }
       if (throttle[url.pathname] > 0) {
         throttle[url.pathname] -= 1;
-        // AWS's own shape for a throttled invocation: `Message`, not `error`.
+        // Verbatim from the live endpoint: `Reason` carries the cause and
+        // `message` only says "Rate Exceeded.", which is why the reason has to
+        // reach the user.
         res.writeHead(429, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ Message: 'Rate Exceeded.' }));
+        return res.end(JSON.stringify({
+          Reason: 'ReservedFunctionConcurrentInvocationLimitExceeded',
+          Type: 'User', message: 'Rate Exceeded.',
+        }));
       }
       let body = MOCK[url.pathname] ?? { error: `no mock for ${url.pathname}` };
       if (url.pathname === '/feedback') {
@@ -686,9 +691,13 @@ await page.setInputFiles('#notesInput', {
 });
 await page.waitForTimeout(20000);             // 1.5 + 4 + 9s of backoff
 const thr = await status();
-ok('gives up after the backoffs', /throttling this account/.test(thr), thr.slice(0, 90));
-ok('names the cause, not just the code', /Lambda invocations/.test(thr));
-ok('and suggests something actionable', /Haiku/.test(thr));
+ok('gives up after the backoffs', /AWS refused the request/.test(thr), thr.slice(0, 90));
+ok("carries AWS's own reason, not just Rate Exceeded",
+   /ReservedFunctionConcurrentInvocationLimitExceeded/.test(thr));
+ok('reads the reason correctly — switched off, not busy',
+   /reserved at zero/.test(thr) && /switched off, not busy/.test(thr));
+ok('and gives the exact command that fixes it',
+   /delete-function-concurrency/.test(thr));
 ok('never shows a bare HTTP 429', !/^Could not read.*HTTP 429$/.test(thr));
 throttle['/notes'] = 0;
 
@@ -727,7 +736,7 @@ await page.setInputFiles('#notesInput', {
 await page.waitForTimeout(22000);
 const stuck = await status();
 ok('a throttle with no local fallback reports the throttle',
-   /throttling this account/.test(stuck), stuck.slice(0, 90));
+   /AWS refused the request/.test(stuck), stuck.slice(0, 90));
 ok('and does not pretend to have a result', !(await page.isVisible('#reviewModal')));
 throttle['/notes'] = 0;
 
