@@ -8,6 +8,7 @@ import {
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import {
+  CfnFunction,
   Code,
   FunctionUrlAuthType,
   Function as LambdaFunction,
@@ -18,6 +19,10 @@ import { bedrockProxy } from './functions/bedrock-proxy/resource';
 
 const backend = defineBackend({ bedrockProxy });
 
+// Concurrent executions reserved for each DiagramIQ function. Generous for a
+// tool a handful of reviewers use at once, and small against the account pool.
+const RESERVED = 10;
+
 // Allow the proxy to call Bedrock models (incl. cross-region inference
 // profiles). Tighten `resources` to specific model ARNs if your org requires.
 const fn = backend.bedrockProxy.resources.lambda;
@@ -27,6 +32,15 @@ fn.addToRolePolicy(
     resources: ['*'],
   }),
 );
+
+// The proxy is Amplify-managed, so its reservation goes on the underlying
+// resource. Guarded rather than cast: if a future Amplify version stops
+// exposing a CfnFunction here, this should quietly do nothing rather than fail
+// the synth of the whole backend.
+const proxyResource = fn.node.defaultChild;
+if (proxyResource instanceof CfnFunction) {
+  proxyResource.reservedConcurrentExecutions = RESERVED;
+}
 
 // Public HTTP API in front of the Lambda (CORS open for the Amplify domain).
 const apiStack = backend.createStack('diagramiq-api');
@@ -55,10 +69,21 @@ const pythonEngine = new LambdaFunction(apiStack, 'PythonAnalyzer', {
   code: Code.fromAsset('amplify/functions/python-analyzer'),
   // The AI passes are long, but no single one is 5 minutes any more: the
   // compliance audit is sliced into 20-rule batches by the caller rather than
-  // scoring all 76 in one generation. A generous timeout is not free — a
-  // wedged invocation holds a concurrency slot for its whole duration, and
-  // exhausted concurrency is what AWS answers with 429.
+  // scoring all 76 in one generation.
   timeout: Duration.seconds(180),
+  // Stated, not inherited.
+  //
+  // This function was found with reserved concurrency of 0 — the Lambda
+  // console's "Throttle" button, or an account janitor, sets exactly that, and
+  // the effect is total: every request is refused with 429 before the function
+  // runs, so there are no logs, no invocations and no trace of a cause. The
+  // account had 971 of 1000 slots free the whole time.
+  //
+  // Declaring a real reservation makes that state impossible to reach silently:
+  // it is visible in the diff, and any redeploy restores it. It also caps this
+  // function at RESERVED concurrent executions, which is far more than a review
+  // tool needs and leaves the rest of the shared account untouched.
+  reservedConcurrentExecutions: RESERVED,
   memorySize: 1024,
   environment: {
     MODEL_ID: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
