@@ -119,6 +119,7 @@ for (const path of [
   '/ai-compliance',
   '/ai-modeller-inputs',
   '/notes',
+  '/sop',
   '/discovery-to-bpmn',
   '/discovery-xlsx',
   '/excel-to-discovery',
