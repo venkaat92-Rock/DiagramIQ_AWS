@@ -54,21 +54,16 @@ OUTPUT — one JSON object, no prose, no markdown fences:
 
 Every edit you made must appear in "changes". If you changed nothing, "changes" is [] and "not_applied" says why.`;
 
-// allow-methods and max-age matter now that the function answers its own
-// preflight: behind the gateway that was the gateway's job, but a Function URL
-// without a CORS configuration forwards OPTIONS straight here, and a preflight
-// without allow-methods is rejected by the browser.
-const CORS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-headers': 'content-type',
-  'access-control-allow-methods': 'POST,OPTIONS',
-  'access-control-max-age': '86400',
-  'content-type': 'application/json',
-};
+// No CORS headers here. Both endpoints in front of this function declare their
+// own, and a Function URL *adds* its configured headers to whatever the
+// function returns — so returning them too produced
+// `access-control-allow-origin: *, *`, which the browser rejects outright while
+// the function logs a clean 200. See the note in python-analyzer/index.py.
+const RESPONSE_HEADERS = { 'content-type': 'application/json' };
 
 const reply = (status: number, body: unknown) => ({
   statusCode: status,
-  headers: CORS,
+  headers: RESPONSE_HEADERS,
   body: JSON.stringify(body),
 });
 

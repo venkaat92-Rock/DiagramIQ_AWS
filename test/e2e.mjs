@@ -93,6 +93,10 @@ let tableModeWorks = false;
 const MOCK = {
   '/notes': {
     discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx',
+    source: { mode: 'transcript', characters: 5182 },
+  },
+  '/sop': {
+    discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx',
     source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 },
   },
   '/excel-to-discovery': { discovery: DISCOVERY },
@@ -144,7 +148,7 @@ const server = http.createServer((req, res) => {
       (calls[url.pathname] = calls[url.pathname] || []).push(bodies[url.pathname]);
       // A table-only read is a different request: it never calls Bedrock, so
       // the throttling being simulated does not apply to it.
-      const notesMode = url.pathname === '/notes' ? bodies['/notes']?.mode : undefined;
+      const notesMode = url.pathname === '/sop' ? bodies['/sop']?.mode : undefined;
       if (notesMode === 'table') {
         res.writeHead(tableModeWorks ? 200 : 422, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(tableModeWorks ? {
@@ -237,22 +241,43 @@ ok('rollback disabled on a blank page', await page.isDisabled('#btnRollback'),
    await page.textContent('#btnRollback'));
 ok('no checks strip before a diagram exists', !(await page.isVisible('#health')));
 
-// ---- 1. Notes / Document accepts Word ------------------------------------
-ok('the input is labelled for documents, not just notes',
-   /Notes \/ Document/.test(await page.textContent('label:has(#notesInput)')),
+// ---- 1. Transcript and SOP are separate inputs, on separate routes -------
+ok('the transcript input is labelled as one',
+   /Notes \/ Transcript/.test(await page.textContent('label:has(#notesInput)')),
    (await page.textContent('label:has(#notesInput)')).trim());
-ok('notes accepts .docx/.pdf',
-   (await page.getAttribute('#notesInput', 'accept')).includes('.docx'),
-   await page.getAttribute('#notesInput', 'accept'));
+ok('the SOP input is labelled as one',
+   /SOP \/ Document/.test(await page.textContent('label:has(#sopInput)')),
+   (await page.textContent('label:has(#sopInput)')).trim());
+ok('the SOP input takes Word and PDF',
+   (await page.getAttribute('#sopInput', 'accept')).includes('.docx'),
+   await page.getAttribute('#sopInput', 'accept'));
 
+// A transcript goes to the transcription pass, and nowhere near the SOP one.
 await page.setInputFiles('#notesInput', {
+  name: 'onboarding_transcript.txt',
+  mimeType: 'text/plain',
+  buffer: Buffer.from('So first the requester raises it, then finance approve it…'),
+});
+await page.waitForTimeout(400);
+ok('a transcript is sent to /notes, not /sop',
+   bodies['/notes']?.filename === 'onboarding_transcript.txt' && !seen.includes('/sop'),
+   seen.join(','));
+ok('the transcript pass gets the model chosen in the UI',
+   /^us\.anthropic\.claude-opus/.test(bodies['/notes']?.modelId || ''),
+   bodies['/notes']?.modelId);
+ok('a transcript is not described as tables and figures', !/Read \d+ table/.test(await status()),
+   await status());
+await page.click('#btnReviewCancel');
+
+// An SOP goes to the document pass.
+await page.setInputFiles('#sopInput', {
   name: 'meeting.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
 });
 await page.waitForTimeout(400);
-ok('Word file sent to /notes as base64',
-   bodies['/notes']?.filename === 'meeting.docx' && !!bodies['/notes']?.fileBase64);
+ok('Word file sent to /sop as base64',
+   bodies['/sop']?.filename === 'meeting.docx' && !!bodies['/sop']?.fileBase64);
 ok('review popup opened', await page.isVisible('#reviewModal'));
 ok('what was read is reported back',
    /Read 5 tables, 1 figure, 8 sections/.test(await status()), await status());
@@ -571,8 +596,8 @@ ok('image pane shows the upload', await page.evaluate(() =>
 
 // Word embeds pasted Office drawings as emf/wmf, which the model cannot read.
 // The user has to be told that, or a missing branch looks like a bad extraction.
-MOCK['/notes'].source = { headings: 3, tables: 1, figures: 0, skippedFigures: 2, characters: 900 };
-await page.setInputFiles('#notesInput', {
+MOCK['/sop'].source = { headings: 3, tables: 1, figures: 0, skippedFigures: 2, characters: 900 };
+await page.setInputFiles('#sopInput', {
   name: 'transcript.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -581,7 +606,7 @@ await page.waitForTimeout(450);
 ok('unreadable figures are called out', /format the AI cannot read/.test(await status()),
    (await status()).slice(-70));
 ok('and flagged as a warning', (await page.getAttribute('#status', 'data-kind')) === 'warn');
-ok('a transcription upload clears the stale image', await page.evaluate(() =>
+ok('a document upload clears the stale image', await page.evaluate(() =>
   !document.getElementById('imgPane').classList.contains('has-image')));
 ok('and the img element carries no src', await page.evaluate(() =>
   !document.getElementById('imgPreview').getAttribute('src')));
@@ -605,8 +630,8 @@ outputsMode = 'deadEngine';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 seen.length = 0;
-MOCK['/notes'].source = { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 };
-await page.setInputFiles('#notesInput', {
+MOCK['/sop'].source = { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 };
+await page.setInputFiles('#sopInput', {
   name: 'SOP.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -614,13 +639,13 @@ await page.setInputFiles('#notesInput', {
 await page.waitForTimeout(900);
 ok('an unreachable engine still gets the work done via the gateway',
    await page.isVisible('#reviewModal'));
-ok('and the request really did arrive', seen.includes('/notes'), seen.join(','));
+ok('and the request really did arrive', seen.includes('/sop'), seen.join(','));
 ok('the fallback is announced alongside the result, not instead of it',
    /Read 5 tables/.test(await status()) && /API gateway/.test(await status()),
    (await status()).slice(-95));
 ok('with the 30s ceiling spelled out', /30s/.test(await status()));
 ok('and the underlying error named, not just "not responding"',
-   /\/notes: /.test(await status()) && /(Failed to fetch|NetworkError|Load failed)/i
+   /\/sop: /.test(await status()) && /(Failed to fetch|NetworkError|Load failed)/i
      .test(await status()),
    (await status()).slice(-70));
 ok('and flagged as a warning', (await page.getAttribute('#status', 'data-kind')) === 'warn');
@@ -631,7 +656,7 @@ if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel
 outputsMode = 'allDead';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'SOP.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -646,10 +671,10 @@ ok('"Failed to fetch" is never shown raw', !/Failed to fetch/.test(dead));
 outputsMode = 'ok';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
-delete MOCK['/notes'];                         // now answers 404 with a body
+delete MOCK['/sop'];                         // now answers 404 with a body
 seen.length = 0;
-calls['/notes'] = [];
-await page.setInputFiles('#notesInput', {
+calls['/sop'] = [];
+await page.setInputFiles('#sopInput', {
   name: 'SOP.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -657,21 +682,21 @@ await page.setInputFiles('#notesInput', {
 await page.waitForTimeout(700);
 // The AI request must not be re-sent; the table-only retry that follows is a
 // different request by design, so it is excluded rather than counted.
-const aiAttempts = (calls['/notes'] || []).filter((c) => c.mode !== 'table').length;
+const aiAttempts = (calls['/sop'] || []).filter((c) => c.mode !== 'table').length;
 ok('an answered error is reported once, not re-sent', aiAttempts === 1, `${aiAttempts} attempts`);
 
 // ---- 18. Throttling is waited out, not surfaced ---------------------------
 outputsMode = 'ok';
-MOCK['/notes'] = {
+MOCK['/sop'] = {
   discovery: DISCOVERY, fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx',
   source: { headings: 8, tables: 5, figures: 1, skippedFigures: 0, characters: 5182 },
 };
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 
-throttle['/notes'] = 2;                       // 429 twice, then succeed
+throttle['/sop'] = 2;                       // 429 twice, then succeed
 seen.length = 0;
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'SOP.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -681,14 +706,14 @@ ok('a retry is announced while it waits', /throttled the request/.test(await sta
    (await status()).slice(0, 80));
 await page.waitForTimeout(9000);              // 1.5s + 4s backoff, plus jitter
 ok('a throttled upload succeeds after backing off', await page.isVisible('#reviewModal'));
-ok('it really did retry', seen.filter((r) => r === '/notes').length === 3,
-   `${seen.filter((r) => r === '/notes').length} attempts`);
+ok('it really did retry', seen.filter((r) => r === '/sop').length === 3,
+   `${seen.filter((r) => r === '/sop').length} attempts`);
 ok('and the result is the real one', (await page.locator('#revTable tbody tr').count()) === 2);
 if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
 
 // ---- 19. Throttling that never clears explains itself ---------------------
-throttle['/notes'] = 99;
-await page.setInputFiles('#notesInput', {
+throttle['/sop'] = 99;
+await page.setInputFiles('#sopInput', {
   name: 'SOP2.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -703,7 +728,7 @@ ok('reads the reason correctly — switched off, not busy',
 ok('and gives the exact command that fixes it',
    /delete-function-concurrency/.test(thr));
 ok('never shows a bare HTTP 429', !/^Could not read.*HTTP 429$/.test(thr));
-throttle['/notes'] = 0;
+throttle['/sop'] = 0;
 
 // ---- 20. The audit fan-out is bounded -------------------------------------
 await page.goto(`${ORIGIN}/`);
@@ -730,10 +755,10 @@ ok('and every slice still went out', (calls['/ai-compliance'] || []).length === 
 // A file that is not a .docx cannot be read in the browser, so a persistent
 // throttle has nothing to fall back on. That has to be said plainly rather
 // than left as a spinner.
-throttle['/notes'] = 99;
+throttle['/sop'] = 99;
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'transcript.txt', mimeType: 'text/plain',
   buffer: Buffer.from('We talked about the process for an hour.'),
 });
@@ -742,7 +767,7 @@ const stuck = await status();
 ok('a throttle with no local fallback reports the throttle',
    /AWS refused the request/.test(stuck), stuck.slice(0, 90));
 ok('and does not pretend to have a result', !(await page.isVisible('#reviewModal')));
-throttle['/notes'] = 0;
+throttle['/sop'] = 0;
 
 // ---- 22. The real SOP, read with no backend at all ------------------------
 // Both endpoints unreachable and the real sample document: this is the path
@@ -753,7 +778,7 @@ outputsMode = 'allDead';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 seen.length = 0;
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'SOP-PR-014 Purchase Requisition to Purchase Order.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: SOP,
@@ -801,7 +826,7 @@ outputsMode = 'ok';
 outputsMode = 'deadEngine';
 await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'first.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),
@@ -819,7 +844,7 @@ await page.evaluate((origin) => {
 ok('a test hook exists to restore the endpoint',
    await page.evaluate(() => typeof window.__diagramiqSetEndpoints === 'function'));
 
-await page.setInputFiles('#notesInput', {
+await page.setInputFiles('#sopInput', {
   name: 'second.docx',
   mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   buffer: Buffer.from('PK-fake-docx'),

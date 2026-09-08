@@ -370,15 +370,20 @@ def _call_bedrock(
     on_chunk: Optional[Callable[[str], None]],
     on_complete: Optional[Callable[[str], None]],
     on_error: Optional[Callable[[str], None]],
+    model_id: Optional[str] = None,
 ) -> None:
     """AWS port. Keeps the 32000-token ceiling — real transcripts truncate
-    below it and the recovery parser then has malformed JSON to work with."""
+    below it and the recovery parser then has malformed JSON to work with.
+
+    model_id is the model chosen in the UI; None keeps the provider default,
+    which is what every caller outside the Lambda passes."""
     try:
         from .bedrock_provider import call_bedrock
         out = call_bedrock(
             TRANSCRIPTION_SYSTEM,
             _build_user_message(text, process_name),
             max_tokens=32000,
+            model_id=model_id,
         )
         if on_chunk:
             on_chunk(out)
@@ -505,6 +510,7 @@ def build_excel_from_transcription(
     on_chunk: Optional[Callable[[str], None]] = None,
     on_complete: Optional[Callable[[str], None]] = None,
     on_error: Optional[Callable[[str], None]] = None,
+    model_id: Optional[str] = None,
 ) -> None:
     """Analyse transcript text with AI and stream the raw JSON response.
 
@@ -520,7 +526,7 @@ def build_excel_from_transcription(
         return
 
     if provider == "bedrock":
-        _call_bedrock(text, process_name, "", on_chunk, on_complete, on_error)
+        _call_bedrock(text, process_name, "", on_chunk, on_complete, on_error, model_id)
     elif provider == "anthropic":
         _call_anthropic(text, process_name, api_key, on_chunk, on_complete, on_error)
     elif provider == "gemini":

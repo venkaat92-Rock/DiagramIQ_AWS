@@ -22,6 +22,26 @@ It prints one line per assertion and ends with `ALL PASS` or `FAILURES`, and
 exits after reporting either way — read the output, don't rely on the exit
 code.
 
+## The other two
+
+`cors-parity.mjs` reads `amplify/backend.ts` and the two handlers. It asserts
+what has to hold for a browser to reach either endpoint: the gateway allows
+OPTIONS, the Function URL lists only methods `CreateFunctionUrlConfig` accepts,
+and neither handler returns CORS headers of its own — a Function URL adds its
+configured headers to whatever the function returns, and two of them is a
+response the browser discards.
+
+`route_split.py` runs the Python engine's handler in-process with Bedrock
+stubbed, and asserts which prompt each upload route sends: `/notes` the
+transcription pass at its 32000-token ceiling, `/sop` the document pass with
+the Word file's tables and figures, each with the model chosen in the UI. It
+needs the vendored dependencies (`amplify/functions/python-analyzer/vendor`)
+and the sample SOP, both of which are in the repository:
+
+```bash
+python3 test/route_split.py
+```
+
 ## What it does not cover
 
 Every `/…` call is answered by a mock in this file, so it proves the frontend's

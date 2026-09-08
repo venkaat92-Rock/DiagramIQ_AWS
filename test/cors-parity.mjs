@@ -14,8 +14,17 @@
 // OPTIONS — and passed, because it only read the file it was checking against
 // the belief it was written from. It is the deployability of the Function URL
 // value that has to be asserted, not its symmetry with a different service.
+// And the handlers must not add CORS headers of their own. A Function URL
+// *adds* its configured headers to whatever the function returns, so a handler
+// that also sets access-control-allow-origin produces '*, *' — which the
+// browser rejects while the function logs a clean 200, and which curl never
+// sees because curl does not enforce CORS.
 import fs from 'node:fs';
 const src = fs.readFileSync('amplify/backend.ts', 'utf8');
+const HANDLERS = [
+  'amplify/functions/python-analyzer/index.py',
+  'amplify/functions/bedrock-proxy/handler.ts',
+];
 
 const gateway = /allowMethods:\s*\[([^\]]+)\]/.exec(src)?.[1] || '';
 const fnUrl = /allowedMethods:\s*\[([^\]]+)\]/.exec(src)?.[1] || '';
@@ -38,6 +47,16 @@ check('the gateway allows OPTIONS — it answers the preflight itself',
 check('the function URL lists only values Cors.AllowMethods accepts — '
       + 'OPTIONS there fails the deploy',
       f.length > 0 && f.every((m) => FN_URL_VALID.has(m)));
+
+for (const file of HANDLERS) {
+  // Comments explaining why the headers are absent must not count as setting
+  // them, so only lines that look like a header assignment are inspected.
+  const offending = fs.readFileSync(file, 'utf8').split('\n')
+    .filter((l) => !/^\s*(\/\/|#)/.test(l))
+    .filter((l) => /['"]access-control-allow-origin['"]\s*:/i.test(l));
+  check(`${file.split('/').pop()} leaves CORS to the endpoint`, offending.length === 0);
+  offending.forEach((l) => console.log('        ', l.trim()));
+}
 
 console.log(ok ? '\nALL PASS' : '\nFAILURES');
 process.exitCode = ok ? 0 : 1;

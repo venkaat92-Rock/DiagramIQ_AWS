@@ -923,14 +923,56 @@ function describeSource(src) {
   return out;
 }
 
-/** ⬆ Notes / Document — a transcript or an SOP, as .txt, .md, .docx or .pdf.
-    Word documents keep their headings, numbered clauses, tables and figures,
-    and the figures go to the model with the text. */
+/** Hand the discovery data to the review grid. Shared by both upload paths so
+    a transcript and an SOP land in the same editable grid. */
+function showDiscovery(file, data) {
+  state.reviewXlsx = data.fileBase64 || '';
+  const note = describeSource(data.source);
+  openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
+  setStatus(`${note} Check the steps against the source, then Approve to build the BPMN.`
+    .trim(), (data.source?.skippedFigures || data.source?.mode === 'table') ? 'warn' : 'info');
+}
+
+/** ⬆ Notes / Transcript — a meeting transcript or notes, as .txt, .md, .docx
+    or .pdf.
+
+    This posts to /notes, which runs the transcription prompt: the one written
+    for someone talking through how a process runs. It is a separate button
+    from ⬆ SOP / Document because it is a separate pass. Reading a transcript
+    with the SOP prompt — which looks for numbered clauses, a responsibilities
+    table and thresholds, none of which a conversation has — gave visibly worse
+    steps than this pass did before the two shared a door.
+
+    No local fallback here: the browser reading recovers a procedure table, and
+    a transcript has none. */
 async function acceptNotes(file) {
   if (!file) return;
   clearImage();
   setBusy(true);
-  setStatus(`AI is reading ${file.name}… (10–60s)`);
+  setStatus(`AI is reading the transcript ${file.name}… (10–60s)`);
+  try {
+    showDiscovery(file, await post('/notes', {
+      fileBase64: await fileToB64(file),
+      filename: file.name,
+      processName: procName(),
+      modelId: currentModelId(),
+    }));
+  } catch (e) {
+    setStatus(`Could not read ${file.name}: ${e.message}`, 'error');
+  } finally { setBusy(false); }
+}
+
+/** ⬆ SOP / Document — a standard operating procedure or work instruction, as
+    .docx or .pdf.
+
+    Posts to /sop, where the document is walked in order: headings, numbered
+    clauses, tables kept as cells and embedded figures, with the figures sent to
+    the model alongside the text. */
+async function acceptSop(file) {
+  if (!file) return;
+  clearImage();
+  setBusy(true);
+  setStatus(`AI is reading the SOP ${file.name}… (10–60s)`);
   const payload = {
     fileBase64: await fileToB64(file),
     filename: file.name,
@@ -938,16 +980,8 @@ async function acceptNotes(file) {
     modelId: currentModelId(),
   };
 
-  const show = (data) => {
-    state.reviewXlsx = data.fileBase64 || '';
-    const note = describeSource(data.source);
-    openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
-    setStatus(`${note} Check the steps against the document, then Approve to build the BPMN.`
-      .trim(), (data.source?.skippedFigures || data.source?.mode === 'table') ? 'warn' : 'info');
-  };
-
   try {
-    show(await post('/notes', payload));
+    showDiscovery(file, await post('/sop', payload));
   } catch (e) {
     // Every backend attempt has now failed. Rather than a third variation on
     // the same request, read the document here: a .docx is a zip of XML, and
@@ -955,7 +989,7 @@ async function acceptNotes(file) {
     // all — no Lambda to be throttled, no endpoint to be unreachable.
     setStatus(`${e.message} Reading the document here instead…`, 'warn');
     const localDoc = await readLocally(file);
-    if (localDoc) { show(localDoc); return; }
+    if (localDoc) { showDiscovery(file, localDoc); return; }
     setStatus(`Could not read ${file.name}: ${e.message}`, 'error');
   } finally { setBusy(false); }
 }
@@ -1361,6 +1395,7 @@ window.addEventListener('DOMContentLoaded', () => {
   $('visioInput').addEventListener('change',
     (e) => acceptEngineFile(e.target.files[0], '/visio', 'Visio → BPMN'));
   $('notesInput').addEventListener('change', (e) => acceptNotes(e.target.files[0]));
+  $('sopInput').addEventListener('change', (e) => acceptSop(e.target.files[0]));
 
   // ---- engine: actions ----
   $('btnValidate').addEventListener('click', validate);

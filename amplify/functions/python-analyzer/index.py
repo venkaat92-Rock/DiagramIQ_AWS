@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
 
 from diagramiq.bpmn_parser import parse_bpmn_xml
 from diagramiq import doc_text as DocText
-from diagramiq.doc_text import UnreadableDocument, extract_document
+from diagramiq.doc_text import UnreadableDocument, extract_document, extract_text
 from diagramiq.preview_model import model_from_bpmn
 from diagramiq.bpmn_validator import validate_bpmn
 from diagramiq.local_uplift import uplift_local
@@ -42,17 +42,28 @@ from diagramiq.visio_to_bpmn import VisioConversionError, build_bpmn_from_visio
 # preflight: behind the gateway that was the gateway's job, but a Function URL
 # without a CORS configuration forwards OPTIONS straight here, and a preflight
 # without allow-methods is rejected by the browser.
-CORS = {
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
-    "access-control-allow-methods": "POST,OPTIONS",
-    "access-control-max-age": "86400",
-    "content-type": "application/json",
-}
+# CORS belongs to the endpoint, and only to the endpoint.
+#
+# A Function URL with a CORS configuration adds its headers to every
+# non-preflight response *in addition to* whatever the function returns. Two
+# `access-control-allow-origin: *` headers is not a valid response: the browser
+# rejects it with "contains multiple values '*, *'", fetch throws "Failed to
+# fetch" with no status, and the function's own log shows a clean 200 — because
+# the function did answer, and the browser threw the answer away.
+#
+# That is why every test that was not a browser passed. curl does not enforce
+# CORS, so a curl POST saw 200; a GET typed into the address bar is a top-level
+# navigation, so no CORS applies; only fetch() from the page ever saw the
+# duplicate. Four rounds of diagnosis went past it.
+#
+# The HTTP API in front of the same handler ignores CORS headers returned by
+# its integration and applies its own, so dropping them here changes nothing on
+# that path — and is what makes the Function URL usable from the browser.
+RESPONSE_HEADERS = {"content-type": "application/json"}
 
 
 def reply(status, body):
-    return {"statusCode": status, "headers": CORS, "body": json.dumps(body)}
+    return {"statusCode": status, "headers": RESPONSE_HEADERS, "body": json.dumps(body)}
 
 
 def xml_reply(xml, **extra):
@@ -429,12 +440,79 @@ def route_ai_modeller_inputs(body):
 
 
 def route_notes(body):
-    """⬆ Notes / Document: .txt / .md / .docx / .pdf -> Process Discovery data.
+    """⬆ Notes / Transcript: a transcript or meeting notes -> Discovery data.
 
-    Handles a transcript and an SOP through the same door. A .docx is walked in
-    document order so its headings, numbered clauses, tables and embedded
-    figures survive, and the figures are sent to the model with the text — an
-    SOP's flow is often drawn rather than written.
+    This is the transcription pass as it was before SOP support existed, and
+    deliberately so: TRANSCRIPTION_SYSTEM is written for someone talking through
+    how a process runs, with a 32000-token ceiling because real transcripts are
+    long and the recovery parser needs a complete-enough answer to work with.
+
+    The one addition is the model: the Bedrock model chosen in the UI is passed
+    through, where before the call always took the default.
+
+    Notes are prose, so the document structure an SOP needs — tables kept as
+    cells, figures pulled out — is not wanted here: it is flattened to text, and
+    Word and PDF behave exactly as plain text does.
+    """
+    from diagramiq.transcription_to_excel import (
+        _parse_ai_json,
+        build_excel_from_transcription,
+        save_excel_from_ai_response,
+    )
+
+    text = body.get("text")
+    if not text:
+        b64 = body.get("fileBase64")
+        if not b64:
+            return reply(400, {"error": "text or fileBase64 is required."})
+        try:
+            text = extract_text(base64.b64decode(b64), body.get("filename") or "notes.txt")
+        except UnreadableDocument as err:
+            return reply(400, {"error": str(err)})
+
+    name = body.get("processName") or "Discovered Process"
+    out = {}
+    build_excel_from_transcription(
+        text=text,
+        process_name=name,
+        provider="bedrock",
+        api_key="",
+        model_id=body.get("modelId"),
+        on_complete=lambda raw: out.__setitem__("raw", raw),
+        on_error=lambda m: out.__setitem__("error", m),
+    )
+    if "error" in out:
+        return reply(502, {"error": out["error"]})
+
+    parsed = _parse_ai_json(out.get("raw", ""))
+    parsed.setdefault("process_name", name)
+    path = os.path.join(tempfile.gettempdir(), "discovery.xlsx")
+    try:
+        save_excel_from_ai_response(parsed, path)
+        with open(path, "rb") as fh:
+            return reply(200, {
+                "discovery": parsed,
+                "source": {"mode": "transcript", "characters": len(text)},
+                "fileBase64": base64.b64encode(fh.read()).decode(),
+                "filename": f"{name}.discovery.xlsx",
+            })
+    finally:
+        _drop(path)
+
+
+def route_sop(body):
+    """⬆ SOP / Document: a procedure document -> Process Discovery data.
+
+    A .docx is walked in document order so its headings, numbered clauses,
+    tables and embedded figures survive, and the figures are sent to the model
+    with the text — an SOP's flow is often drawn rather than written. The
+    prompt is written for that shape: clause numbering is step order, a
+    responsibilities table supplies the participant, thresholds are decisions,
+    and the reference sections are not steps.
+
+    A transcript is a different kind of source and goes to /notes instead.
+    Reading one with this prompt produced worse results than the transcription
+    pass it replaced, which is what sending both through one door cost.
 
     Returns the discovery model for the in-browser review grid, the .xlsx so the
     reviewer can export it, and a summary of what was actually read, so the user
@@ -631,6 +709,7 @@ ROUTES = {
     "/ai-compliance": route_ai_compliance,
     "/ai-modeller-inputs": route_ai_modeller_inputs,
     "/notes": route_notes,
+    "/sop": route_sop,
     "/discovery-to-bpmn": route_discovery_to_bpmn,
     "/discovery-xlsx": route_discovery_xlsx,
     "/excel-to-discovery": route_excel_to_discovery,
