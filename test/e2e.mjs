@@ -619,6 +619,10 @@ ok('the fallback is announced alongside the result, not instead of it',
    /Read 5 tables/.test(await status()) && /API gateway/.test(await status()),
    (await status()).slice(-95));
 ok('with the 30s ceiling spelled out', /30s/.test(await status()));
+ok('and the underlying error named, not just "not responding"',
+   /\/notes: /.test(await status()) && /(Failed to fetch|NetworkError|Load failed)/i
+     .test(await status()),
+   (await status()).slice(-70));
 ok('and flagged as a warning', (await page.getAttribute('#status', 'data-kind')) === 'warn');
 // Guarded: a failed assertion above must not abort the run before results print.
 if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
@@ -789,6 +793,45 @@ const built = await status();
 ok('and says it was built here', /built here/.test(built), built.slice(0, 70));
 ok('naming the limitation', /flow labels rather than gateways/.test(built));
 if (process.env.SHOTS) await page.screenshot({ path: '/tmp/local-diagram.png' });
+outputsMode = 'ok';
+
+// ---- 23. The degraded banner clears when the endpoint recovers ------------
+// It is sticky on purpose, so one message cannot scroll it away — but a banner
+// that outlives the outage points the reader at a problem that is gone.
+outputsMode = 'deadEngine';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+await page.setInputFiles('#notesInput', {
+  name: 'first.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(800);
+ok('degraded after a fallback', /API gateway/.test(await status()), (await status()).slice(-60));
+if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
+
+// The direct endpoint comes back. Everything now points at the live server.
+await page.evaluate((origin) => {
+  // Same effect as a redeploy restoring the endpoint, without reloading and
+  // losing the degraded state we are testing.
+  window.__diagramiqSetEndpoints?.(origin);
+}, ORIGIN);
+ok('a test hook exists to restore the endpoint',
+   await page.evaluate(() => typeof window.__diagramiqSetEndpoints === 'function'));
+
+await page.setInputFiles('#notesInput', {
+  name: 'second.docx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  buffer: Buffer.from('PK-fake-docx'),
+});
+await page.waitForTimeout(700);
+const after = await status();
+ok('the banner is gone once a direct call succeeds', !/API gateway/.test(after),
+   after.slice(-70));
+ok('and the message is no longer forced to a warning',
+   (await page.getAttribute('#status', 'data-kind')) !== 'warn',
+   await page.getAttribute('#status', 'data-kind'));
+if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
 outputsMode = 'ok';
 
 console.log('\n--- results ---');
