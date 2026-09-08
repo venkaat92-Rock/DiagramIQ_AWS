@@ -150,9 +150,20 @@ for (const path of [
 // headers. That was wrong, and the evidence was already in this file: the HTTP
 // API has always declared CORS *and* had handlers that return the same
 // headers, and that combination has worked from the start.
+//
+// OPTIONS is not optional. A JSON POST is not a simple request, so the browser
+// sends a preflight OPTIONS first, and an endpoint that does not allow that
+// method never answers it — the POST then fails as "Failed to fetch", with no
+// status and nothing in the function's log, while a plain GET to the same host
+// and a curl POST (neither of which preflights) both succeed.
+//
+// The HTTP API above has always declared [POST, OPTIONS] and has always worked
+// from the browser. This declared [POST] alone. That asymmetry was the whole
+// difference between the endpoint the browser could reach and the one it
+// could not.
 const urlCors = {
   allowedOrigins: ['*'],
-  allowedMethods: [FnUrlMethod.POST],
+  allowedMethods: [FnUrlMethod.POST, FnUrlMethod.OPTIONS],
   allowedHeaders: ['content-type'],
 };
 const engineUrl = pythonEngine.addFunctionUrl({
