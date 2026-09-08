@@ -151,19 +151,22 @@ for (const path of [
 // API has always declared CORS *and* had handlers that return the same
 // headers, and that combination has worked from the start.
 //
-// OPTIONS is not optional. A JSON POST is not a simple request, so the browser
-// sends a preflight OPTIONS first, and an endpoint that does not allow that
-// method never answers it — the POST then fails as "Failed to fetch", with no
-// status and nothing in the function's log, while a plain GET to the same host
-// and a curl POST (neither of which preflights) both succeed.
+// The two endpoints spell CORS differently, and that asymmetry is correct.
 //
-// The HTTP API above has always declared [POST, OPTIONS] and has always worked
-// from the browser. This declared [POST] alone. That asymmetry was the whole
-// difference between the endpoint the browser could reach and the one it
-// could not.
+// An HTTP API answers the preflight only for methods it was told to allow, so
+// OPTIONS has to be listed above. A Function URL answers the preflight itself,
+// in the service, before the function is reached — Cors.AllowMethods describes
+// the *actual* request, and its valid values are GET | PUT | HEAD | POST |
+// PATCH | DELETE | *. OPTIONS is not one of them.
+//
+// Listing it here does not tighten anything; it makes the stack undeployable.
+// CreateFunctionUrlConfig rejects the value, the CloudFormation update rolls
+// back, and the Amplify build fails before the frontend is published — which
+// is exactly what happened to Deployment 27. The site kept serving the last
+// good build, so the symptom was "my fix changed nothing", not an error.
 const urlCors = {
   allowedOrigins: ['*'],
-  allowedMethods: [FnUrlMethod.POST, FnUrlMethod.OPTIONS],
+  allowedMethods: [FnUrlMethod.POST],
   allowedHeaders: ['content-type'],
 };
 const engineUrl = pythonEngine.addFunctionUrl({
