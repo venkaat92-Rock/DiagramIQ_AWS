@@ -8,7 +8,7 @@ import { discoveryFromTables, discoveryToModel } from './tableToDiscovery.js';
 const $ = (id) => document.getElementById(id);
 let zoom;                       // preview zoom/pan controller, built on load
 const state = {
-  apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png',
+  apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png', lastSop: null,
   // Engine state. `xml` is the working BPMN once anything produces one;
   // `changes` accumulates the patcher's change log for the uplift report.
   reviewXlsx: '', changes: [], discovery: null, lastReport: null,
@@ -740,6 +740,10 @@ function readReview() {
 }
 
 function openReview(discovery, title, mode = 'build') {
+  // Cleared on every open: an Excel upload or a patch review must not inherit
+  // the warning left by the SOP read before it.
+  $('revDegraded').hidden = true;
+  $('btnRetryAi').hidden = true;
   state.discovery = discovery;
   state.reviewMode = mode;
   $('btnApproveBuild').textContent = mode === 'patch'
@@ -923,14 +927,60 @@ function describeSource(src) {
   return out;
 }
 
+/** What a lesser reading is missing, said in the grid the reviewer is about to
+    approve from — not only in a status line the next message overwrites.
+
+    An SOP read by the AI carries the thresholds and conditions written into the
+    clause text. The two fallbacks do not: they map the procedure table, which
+    has the steps, the roles and the systems, and none of the criteria. The
+    diagrams look similar and are not, so the difference is stated where the
+    decision is made. */
+const DEGRADED_NOTE = {
+  table: 'Table-only reading — no thresholds or conditions',
+  local: 'Read in your browser — no clause text, no figure',
+};
+
 /** Hand the discovery data to the review grid. Shared by both upload paths so
     a transcript and an SOP land in the same editable grid. */
 function showDiscovery(file, data) {
   state.reviewXlsx = data.fileBase64 || '';
   const note = describeSource(data.source);
+  const lesser = DEGRADED_NOTE[data.source?.mode];
   openReview(data.discovery || {}, `Review — ${file.name}`, 'build');
+
+  const badge = $('revDegraded');
+  badge.textContent = lesser || '';
+  badge.hidden = !lesser;
+  // Re-running is only offered where it can help: the AI pass failed on a file
+  // we still hold, so it can be asked for again without a re-upload.
+  $('btnRetryAi').hidden = !(lesser && state.lastSop);
+
   setStatus(`${note} Check the steps against the source, then Approve to build the BPMN.`
-    .trim(), (data.source?.skippedFigures || data.source?.mode === 'table') ? 'warn' : 'info');
+    .trim(), (data.source?.skippedFigures || lesser) ? 'warn' : 'info');
+}
+
+/** Ask for the full AI reading of the SOP already uploaded.
+
+    mode 'ai' refuses to fall back, so this either returns the full reading or
+    says why it could not — re-running it only to be handed the same table
+    reading again, unlabelled, would be worse than not offering it. */
+async function retryAiReading() {
+  const file = state.lastSop;
+  if (!file) return;
+  setBusy(true);
+  setStatus(`Asking for the full AI reading of ${file.name}… (10–60s)`);
+  try {
+    showDiscovery(file, await post('/sop', {
+      fileBase64: await fileToB64(file),
+      filename: file.name,
+      processName: procName(),
+      modelId: currentModelId(),
+      mode: 'ai',
+    }));
+  } catch (e) {
+    setStatus(`The full AI reading is still not available: ${e.message} `
+      + 'The table reading is still in the grid — Cancel to keep it.', 'error');
+  } finally { setBusy(false); }
 }
 
 /** ⬆ Notes / Transcript — a meeting transcript or notes, as .txt, .md, .docx
@@ -970,6 +1020,7 @@ async function acceptNotes(file) {
     the model alongside the text. */
 async function acceptSop(file) {
   if (!file) return;
+  state.lastSop = file;
   clearImage();
   setBusy(true);
   setStatus(`AI is reading the SOP ${file.name}… (10–60s)`);
@@ -1396,6 +1447,7 @@ window.addEventListener('DOMContentLoaded', () => {
     (e) => acceptEngineFile(e.target.files[0], '/visio', 'Visio → BPMN'));
   $('notesInput').addEventListener('change', (e) => acceptNotes(e.target.files[0]));
   $('sopInput').addEventListener('change', (e) => acceptSop(e.target.files[0]));
+  $('btnRetryAi').addEventListener('click', retryAiReading);
 
   // ---- engine: actions ----
   $('btnValidate').addEventListener('click', validate);
