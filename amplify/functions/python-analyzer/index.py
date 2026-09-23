@@ -24,12 +24,16 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 # Deps vendored by the Amplify build (see amplify.yml + requirements.txt).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
 
 from diagramiq.bpmn_parser import parse_bpmn_xml
+
+from diagramiq import audit
 from diagramiq import doc_text as DocText
+from diagramiq.identity import Identity, NotAuthorised, identify
 from diagramiq.doc_text import UnreadableDocument, extract_document, extract_text
 from diagramiq.preview_model import model_from_bpmn
 from diagramiq.bpmn_validator import validate_bpmn
@@ -722,7 +726,8 @@ def handler(event, context):
         return reply(200, {})
 
     raw = event.get("rawPath") or event.get("path") or ""
-    route = next((fn for path, fn in ROUTES.items() if raw.endswith(path)), None)
+    route_name = next((path for path in ROUTES if raw.endswith(path)), None)
+    route = ROUTES.get(route_name) if route_name else None
     if route is None:
         return reply(404, {"error": f"Unknown route: {raw}"})
 
@@ -731,7 +736,30 @@ def handler(event, context):
     except json.JSONDecodeError:
         return reply(400, {"error": "Invalid JSON body."})
 
+    # Identity first: a request that cannot say who it is does not get to run,
+    # and the audit row needs the caller before the work starts, not after.
+    started = time.time()
     try:
-        return route(body)
+        identity = identify(event)
+    except NotAuthorised as err:
+        audit.record(Identity.anonymous(), route_name, err.status, started,
+                     detail=audit.summarise(body), error=str(err))
+        return reply(err.status, {"error": str(err)})
+
+    detail = audit.summarise(body)
+    try:
+        result = route(body)
     except Exception as err:  # surface actionable errors to the UI
+        audit.record(identity, route_name, 500, started, detail=detail,
+                     error=f"{type(err).__name__}: {err}")
         return reply(500, {"error": f"{type(err).__name__}: {err}"})
+
+    status = result.get("statusCode", 200) if isinstance(result, dict) else 200
+    error = ""
+    if status >= 400 and isinstance(result, dict):
+        try:
+            error = json.loads(result.get("body") or "{}").get("error", "")
+        except json.JSONDecodeError:
+            error = ""
+    audit.record(identity, route_name, status, started, detail=detail, error=error)
+    return result

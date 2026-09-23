@@ -1,3 +1,7 @@
+import {
+  authHeader, configureAuth, configured as authConfigured, currentUser,
+  isSuperAdmin, restore as restoreSession, setNewPassword, signIn, signOut,
+} from './auth.js';
 /* DiagramIQ AWS — app logic. */
 import { buildBpmn, layoutModel } from './bpmnBuilder.js';
 import { renderSvg } from './svgPreview.js';
@@ -8,7 +12,8 @@ import { discoveryFromTables, discoveryToModel } from './tableToDiscovery.js';
 const $ = (id) => document.getElementById(id);
 let zoom;                       // preview zoom/pan controller, built on load
 const state = {
-  apiUrl: '', model: null, xml: '', imageB64: '', mediaType: 'image/png', lastSop: null,
+  apiUrl: '', adminUrl: '', requireAuth: false,
+  model: null, xml: '', imageB64: '', mediaType: 'image/png', lastSop: null,
   // Engine state. `xml` is the working BPMN once anything produces one;
   // `changes` accumulates the patcher's change log for the uplift report.
   reviewXlsx: '', changes: [], discovery: null, lastReport: null,
@@ -86,7 +91,14 @@ async function loadOutputs() {
     // back to the gateway.
     state.engineUrl = trimSlash(o?.custom?.diagramiqEngineUrl);
     state.aiUrl = trimSlash(o?.custom?.diagramiqAiUrl);
+    state.adminUrl = trimSlash(o?.custom?.diagramiqAdminUrl);
+    state.requireAuth = String(o?.custom?.requireAuth ?? 'false').toLowerCase() === 'true';
+    configureAuth({
+      region: o?.custom?.region,
+      userPoolClientId: o?.custom?.userPoolClientId,
+    });
   } catch { /* not deployed yet */ }
+  applySession();
   if (!state.apiUrl) {
     setStatus('Backend not connected — deploy via Amplify (see README). You can still explore the UI.', 'warn');
   } else {
@@ -160,10 +172,17 @@ function isThrottled(status, message) {
 async function send(base, path, body) {
   const r = await fetch(base + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(await authHeader()) },
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    // The session lapsed mid-task. Put the door back rather than failing each
+    // click from here on with an error that does not say why.
+    signOut();
+    showGate('Your session has ended. Sign in again to continue.');
+    throw new Error(data.error || 'Your session has ended.');
+  }
   if (!r.ok) {
     if (!data.error && (r.status === 503 || r.status === 504)) {
       // No error body means this never reached the function: the gateway gave
@@ -1392,6 +1411,216 @@ async function approveDownload() {
 }
 
 /* ---------- wire up -------------------------------------------------------- */
+
+/* ---------- the door ------------------------------------------------------
+ *
+ * Three states, one form: sign in, set a password on first use, and signed in.
+ * The gate covers the tool rather than disabling parts of it — a UI whose
+ * buttons are all present and all fail is worse than a closed door.
+ */
+let challenge = null;      // { session, email } while a new password is due
+
+function showGate(message = '') {
+  const gate = $('authGate');
+  if (!gate) return;
+  gate.hidden = false;
+  $('authError').textContent = message;
+  $('whoami').hidden = true;
+}
+
+function hideGate() {
+  const gate = $('authGate');
+  if (gate) gate.hidden = true;
+}
+
+/** Reflect whoever is signed in — or open the door if nobody is. */
+function applySession() {
+  const user = restoreSession() && currentUser();
+  if (user) {
+    hideGate();
+    $('whoami').hidden = false;
+    $('whoamiEmail').textContent = user.email;
+    $('btnAdmin').hidden = !isSuperAdmin();
+    return;
+  }
+  // No pool configured (an older deployment, or the local test harness) means
+  // there is nothing to sign in to; the tool stays open.
+  if (!authConfigured()) { hideGate(); return; }
+  if (state.requireAuth) showGate();
+  else { hideGate(); $('whoami').hidden = true; }
+}
+
+function askForNewPassword(email, session) {
+  challenge = { email, session };
+  $('authLead').textContent = 'Choose a password for your account.';
+  $('authEmail').value = email;
+  $('authEmail').readOnly = true;
+  $('authPassword').closest('label').hidden = true;
+  $('authPassword').required = false;
+  $('authNewWrap').hidden = false;
+  $('authNew1').required = true;
+  $('authNew2').required = true;
+  $('authSubmit').textContent = 'Set password and sign in';
+  $('authError').textContent = '';
+  $('authNew1').focus();
+}
+
+async function submitAuth(e) {
+  e.preventDefault();
+  const button = $('authSubmit');
+  const error = $('authError');
+  error.textContent = '';
+  button.disabled = true;
+  try {
+    if (challenge) {
+      const a = $('authNew1').value;
+      const b = $('authNew2').value;
+      if (a !== b) throw new Error('The two passwords do not match.');
+      if (a.length < 12) throw new Error('Use at least 12 characters.');
+      await setNewPassword(challenge.email, challenge.session, a);
+      challenge = null;
+      applySession();
+      setStatus(`Signed in as ${currentUser().email}.`);
+      return;
+    }
+    const result = await signIn($('authEmail').value, $('authPassword').value);
+    if (result.status === 'newPassword') {
+      askForNewPassword(result.email, result.session);
+      return;
+    }
+    applySession();
+    setStatus(`Signed in as ${currentUser().email}.`);
+  } catch (err) {
+    error.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function doSignOut() {
+  signOut();
+  challenge = null;
+  $('authEmail').readOnly = false;
+  $('authPassword').closest('label').hidden = false;
+  $('authPassword').required = true;
+  $('authPassword').value = '';
+  $('authNewWrap').hidden = true;
+  $('authSubmit').textContent = 'Sign in';
+  $('authLead').textContent = 'Sign in to continue.';
+  applySession();
+  if (!state.requireAuth) showGate('Signed out.');
+}
+
+/* ---------- admin console -------------------------------------------------- */
+
+async function adminCall(path, body = {}) {
+  if (!state.adminUrl) throw new Error('The admin API is not deployed yet.');
+  const r = await fetch(state.adminUrl.replace(/\/$/, '') + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(await authHeader()) },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function openAdmin() {
+  $('adminModal').showModal();
+  showAdminTab('people');
+}
+
+function showAdminTab(which) {
+  const people = which === 'people';
+  $('panePeople').hidden = !people;
+  $('paneLog').hidden = people;
+  $('tabPeople').classList.toggle('active', people);
+  $('tabLog').classList.toggle('active', !people);
+  (people ? loadPeople : loadLog)();
+}
+
+async function loadPeople() {
+  const body = $('peopleTable').querySelector('tbody');
+  body.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+  try {
+    const { users } = await adminCall('/users');
+    body.innerHTML = '';
+    for (const u of users) {
+      const admin = (u.groups || []).includes('superadmin');
+      const pending = u.status === 'FORCE_CHANGE_PASSWORD';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${u.email || u.username}</td>
+        <td><span class="pill-role${admin ? ' admin' : ''}">${admin ? 'Super admin' : 'User'}</span></td>
+        <td><span class="pill-state${pending ? ' pending' : (u.enabled ? '' : ' off')}">${
+          !u.enabled ? 'Disabled' : (pending ? 'Invited — password not set' : 'Active')}</span></td>
+        <td>${u.created ? new Date(u.created).toLocaleDateString() : ''}</td>
+        <td></td>`;
+      const actions = tr.lastElementChild;
+      const button = (label, fn) => {
+        const b = document.createElement('button');
+        b.className = 'ghost small';
+        b.textContent = label;
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          try { await fn(); await loadPeople(); }
+          catch (err) { $('adminMsg').textContent = err.message; b.disabled = false; }
+        });
+        actions.appendChild(b);
+      };
+      if (pending) button('Re-send invite', () => adminCall('/resend', { username: u.username }));
+      button(u.enabled ? 'Disable' : 'Enable',
+             () => adminCall(u.enabled ? '/disable' : '/enable', { username: u.username }));
+      body.appendChild(tr);
+    }
+    if (!users.length) body.innerHTML = '<tr><td colspan="5" class="muted">Nobody yet.</td></tr>';
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${err.message}</td></tr>`;
+  }
+}
+
+async function loadLog() {
+  const body = $('logTable').querySelector('tbody');
+  body.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+  try {
+    const { entries } = await adminCall('/logs', { limit: 200 });
+    body.innerHTML = '';
+    for (const e of entries) {
+      const tr = document.createElement('tr');
+      const detail = Object.entries(e.detail || {})
+        .map(([k, v]) => `${k}: ${v}`).join(' · ');
+      tr.innerHTML = `
+        <td>${new Date(e.ts).toLocaleString()}</td>
+        <td>${e.actor || 'anonymous'}</td>
+        <td>${e.action || ''}</td>
+        <td>${e.status ?? ''}${e.ms != null ? ` · ${e.ms} ms` : ''}${e.error ? ' · ' + e.error : ''}</td>
+        <td class="muted">${detail}</td>`;
+      body.appendChild(tr);
+    }
+    if (!entries.length) body.innerHTML = '<tr><td colspan="5" class="muted">No activity recorded yet.</td></tr>';
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${err.message}</td></tr>`;
+  }
+}
+
+async function sendInvite(e) {
+  e.preventDefault();
+  const msg = $('adminMsg');
+  msg.textContent = 'Sending…';
+  try {
+    const out = await adminCall('/invite', {
+      email: $('inviteEmail').value,
+      superadmin: $('inviteAdmin').checked,
+    });
+    msg.textContent = out.message || `Invitation sent to ${out.email}.`;
+    $('inviteEmail').value = '';
+    $('inviteAdmin').checked = false;
+    await loadPeople();
+  } catch (err) {
+    msg.textContent = err.message;
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   zoom = createZoom({ pane: $('svgPane'), label: $('zoomLabel') });
   // Point every endpoint at one origin. Exposed for the browser test, which
@@ -1404,6 +1633,13 @@ window.addEventListener('DOMContentLoaded', () => {
   initModelPicker();
   syncRollback();
   paintChecks();
+  $('authForm').addEventListener('submit', submitAuth);
+  $('btnSignOut').addEventListener('click', doSignOut);
+  $('btnAdmin').addEventListener('click', openAdmin);
+  $('btnAdminClose').addEventListener('click', () => $('adminModal').close());
+  $('tabPeople').addEventListener('click', () => showAdminTab('people'));
+  $('tabLog').addEventListener('click', () => showAdminTab('log'));
+  $('inviteForm').addEventListener('submit', sendInvite);
   $('fileInput').addEventListener('change', (e) => acceptImage(e.target.files[0]));
   const drop = $('imgPane');
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });

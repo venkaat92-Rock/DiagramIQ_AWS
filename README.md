@@ -130,9 +130,54 @@ CloudFormation permissions.
 - Signavio validation rules + AI Uplift
 - Bedrock **Agents** option for the text pipelines (InvokeAgent)
 
+## Accounts, sign-in and the activity log
+
+People are let in by a super admin; there is no self sign-up. Cognito emails
+each new address an invitation carrying a temporary password, and the first
+sign-in forces the person to choose their own.
+
+### Turning it on (two steps, and the order matters)
+
+1. **Deploy.** The user pool, the audit table and the admin console ship with
+   `REQUIRE_AUTH=false`, so the tool keeps working for everyone while you set
+   up. Nothing is enforced yet — this is deliberate: a mail-delivery problem
+   must not be able to lock the administrator out of a running tool.
+
+2. **Create the first super admin.** In the AWS console, Cognito → the
+   `amplify...` user pool → *Create user*: email address, *Send an email
+   invitation*. Then Groups → `superadmin` → add that user. Sign in to
+   DiagramIQ with the temporary password, set a real one, and the **⚙ Admin**
+   button appears in the header. Everyone after that can be invited from there.
+
+3. **Enforce it.** Set the Amplify environment variable
+   `DIAGRAMIQ_REQUIRE_AUTH=true` (Amplify console → Hosting → Environment
+   variables) and redeploy. From then on every API call needs a valid token,
+   and the sign-in gate covers the tool.
+
+### Email delivery
+
+Cognito's built-in mailer sends the invitations and is capped at **50 messages
+a day**, from `no-reply@verificationemail.com` — fine for a pilot, and it does
+land in spam sometimes. For real use, point the pool at SES with a verified
+sender (Cognito → Messaging → Email provider). SES starts in a sandbox where
+you may only mail verified addresses, so request production access before
+inviting anyone outside your own domain.
+
+### What is logged
+
+One row per request in the `diagramiq-audit-log` DynamoDB table: who, which
+route, when, how long it took, the outcome, and a shallow summary of the input
+— filename, process name, the size of what was uploaded. **Never the document
+itself**: a customer's process material should not acquire a second copy for
+the sake of a log. Admin actions (invite, disable, role change) are logged the
+same way. Rows expire after 400 days via TTL, and the table survives a stack
+teardown on purpose.
+
+Read it in the app: **⚙ Admin → Activity log**.
+
 ## Security notes
-- The HTTP API is **unauthenticated** by default (like a demo). For corporate
-  use, put it behind Amplify Auth/Cognito or an API key: add an authorizer in
-  `amplify/backend.ts`.
+- Sign-in is Cognito; see above. Until `DIAGRAMIQ_REQUIRE_AUTH=true` the API is
+  **unauthenticated**, which is the shipping default so that deploying the
+  login layer cannot lock you out before you have an account.
 - The Lambda role's Bedrock policy is `resources: ['*']`; tighten it to the
   specific model/inference-profile ARNs if your org requires least privilege.

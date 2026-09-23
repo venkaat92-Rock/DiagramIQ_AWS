@@ -7,10 +7,42 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!-- Sign-in gate. Shown over everything until the person is known; hidden
+       entirely when the deployment has no user pool yet. -->
+  <div id="authGate" class="auth-gate" hidden>
+    <form id="authForm" class="auth-card">
+      <h2>DiagramIQ</h2>
+      <p class="auth-sub" id="authLead">Sign in to continue.</p>
+      <label>Email
+        <input id="authEmail" type="email" autocomplete="username" required />
+      </label>
+      <label>Password
+        <input id="authPassword" type="password" autocomplete="current-password" required />
+      </label>
+      <div id="authNewWrap" hidden>
+        <label>Choose a password
+          <input id="authNew1" type="password" autocomplete="new-password" />
+        </label>
+        <label>Confirm it
+          <input id="authNew2" type="password" autocomplete="new-password" />
+        </label>
+        <p class="auth-hint">At least 12 characters, with upper case, lower case and a number.</p>
+      </div>
+      <button id="authSubmit" type="submit">Sign in</button>
+      <p id="authError" class="auth-error" role="alert"></p>
+      <p class="auth-foot">Access is granted by an administrator. If you have no account, ask for an invitation.</p>
+    </form>
+  </div>
+
   <header>
     <h1>DiagramIQ</h1>
     <span class="sub">AI-powered BPMN 2.0 diagram intelligence</span>
     <span class="aws">AWS · Amplify + Bedrock</span>
+    <span class="whoami" id="whoami" hidden>
+      <button id="btnAdmin" class="ghost small" hidden>⚙ Admin</button>
+      <span id="whoamiEmail"></span>
+      <button id="btnSignOut" class="ghost small">Sign out</button>
+    </span>
   </header>
 
   <div class="controls">
@@ -224,6 +256,46 @@
     <div class="actions"><span class="spacer"></span><button id="btnXmlClose">Close</button></div>
   </dialog>
 
+
+  <dialog id="adminModal" class="sheet">
+    <header>
+      <h3>Admin — people and activity</h3>
+      <div class="sheet-actions">
+        <button id="btnAdminClose" class="ghost">Close</button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <div class="admin-tabs">
+        <button id="tabPeople" class="tab active" type="button">People</button>
+        <button id="tabLog" class="tab" type="button">Activity log</button>
+      </div>
+
+      <section id="panePeople">
+        <form id="inviteForm" class="invite-row">
+          <input id="inviteEmail" type="email" placeholder="name@company.com" required />
+          <label class="inline"><input id="inviteAdmin" type="checkbox" /> Super admin</label>
+          <button type="submit">Send invitation</button>
+        </form>
+        <p id="adminMsg" class="muted"></p>
+        <table id="peopleTable">
+          <thead><tr>
+            <th>Email</th><th>Role</th><th>Status</th><th>Added</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="paneLog" hidden>
+        <p class="muted">Every request, newest first — who, what, when, and how long it took.</p>
+        <table id="logTable">
+          <thead><tr>
+            <th>When</th><th>Who</th><th>Action</th><th>Result</th><th>Detail</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+  </dialog>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

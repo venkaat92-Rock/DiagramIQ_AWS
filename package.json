@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "node test/e2e.mjs",
     "test:cors": "node test/cors-parity.mjs",
-    "test:routes": "python3 test/route_split.py"
+    "test:routes": "python3 test/route_split.py",
+    "test:auth": "python3 test/auth.py"
   },
   "devDependencies": {
     "@aws-amplify/backend": "^1.16.1",
@@ -22,6 +23,10 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.750.0"
+    "@aws-sdk/client-bedrock-runtime": "^3.750.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1138.0",
+    "@aws-sdk/client-dynamodb": "^3.1138.0",
+    "@aws-sdk/lib-dynamodb": "^3.1138.0",
+    "aws-jwt-verify": "^5.2.1"
   }
 }

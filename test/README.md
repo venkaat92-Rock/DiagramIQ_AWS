@@ -42,6 +42,16 @@ and the sample SOP, both of which are in the repository:
 python3 test/route_split.py
 ```
 
+`auth.py` runs the engine handler with boto3 stubbed and asserts the policy of
+the login layer: who is refused, what the refusal says, that a valid token is
+resolved once and then cached, and — the assertion that matters most — that the
+audit row keeps the filename and the size of an upload but never the document
+text itself. It was confirmed to fail when enforcement is bypassed.
+
+```bash
+python3 test/auth.py
+```
+
 ## What it does not cover
 
 Every `/…` call is answered by a mock in this file, so it proves the frontend's
