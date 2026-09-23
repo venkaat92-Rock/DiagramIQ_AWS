@@ -220,6 +220,11 @@ const server = http.createServer((req, res) => {
       secured:     { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/`,
                      diagramiqAdminUrl: `${ORIGIN}/admin/`, region: 'us-west-2',
                      userPoolId: 'us-west-2_test', userPoolClientId: 'testclient', requireAuth: 'true' },
+      // The first day of the staged rollout: the pool exists, enforcement does
+      // not yet. Whoever was just made a super admin still has to get in.
+      staged:      { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/`,
+                     diagramiqAdminUrl: `${ORIGIN}/admin/`, region: 'us-west-2',
+                     userPoolId: 'us-west-2_test', userPoolClientId: 'testclient', requireAuth: 'false' },
     }[outputsMode];
     return res.end(JSON.stringify({ custom }));
   }
@@ -1023,6 +1028,49 @@ ok('a 401 mid-session reopens the gate', await page.isVisible('#authGate'));
 ok('and says why', /session has ended/i.test(await page.textContent('#authError')),
    await page.textContent('#authError'));
 expire401 = false;
+outputsMode = 'ok';
+
+
+// ---- 27. Before enforcement, there is still a way in ----------------------
+// The flaw this covers: with REQUIRE_AUTH still false the gate does not show,
+// and without a sign-in control the newly created super admin has nowhere to
+// click — no console, no way to invite anyone, no way to prove sign-in works
+// before switching enforcement on.
+await page.evaluate(() => sessionStorage.clear());
+outputsMode = 'staged';
+cognitoMode = 'signedIn';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+ok('with enforcement off the tool is open', !(await page.isVisible('#authGate')));
+ok('but a way in is offered', await page.isVisible('#btnSignIn'));
+ok('and nothing pretends someone is signed in', !(await page.isVisible('#btnSignOut')));
+
+await page.click('#btnSignIn');
+await page.waitForTimeout(200);
+ok('the sign-in button opens the gate', await page.isVisible('#authGate'));
+ok('and the gate can be escaped while sign-in is optional',
+   await page.isVisible('#authDismiss'));
+await page.click('#authDismiss');
+await page.waitForTimeout(200);
+ok('dismissing it returns the tool', !(await page.isVisible('#authGate')));
+
+await page.click('#btnSignIn');
+await page.fill('#authEmail', 'anna@example.com');
+await page.fill('#authPassword', 'Proper-Password-1');
+await page.click('#authSubmit');
+await page.waitForTimeout(500);
+ok('signing in from that route works', !(await page.isVisible('#authGate')));
+ok('and the admin console is then reachable', await page.isVisible('#btnAdmin'));
+ok('which is the whole point — the super admin can now invite people',
+   await page.isVisible('#whoami'));
+
+// enforced again: the escape hatch must not exist
+await page.evaluate(() => sessionStorage.clear());
+outputsMode = 'secured';
+cognitoMode = 'signedIn';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+ok('once enforced, the gate has no way past it', !(await page.isVisible('#authDismiss')));
 outputsMode = 'ok';
 
 console.log('\n--- results ---');

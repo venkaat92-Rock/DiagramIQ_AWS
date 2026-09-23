@@ -31,6 +31,7 @@
       <button id="authSubmit" type="submit">Sign in</button>
       <p id="authError" class="auth-error" role="alert"></p>
       <p class="auth-foot">Access is granted by an administrator. If you have no account, ask for an invitation.</p>
+      <button id="authDismiss" type="button" class="auth-dismiss" hidden>Continue without signing in</button>
     </form>
   </div>
 
@@ -41,7 +42,8 @@
     <span class="whoami" id="whoami" hidden>
       <button id="btnAdmin" class="ghost small" hidden>⚙ Admin</button>
       <span id="whoamiEmail"></span>
-      <button id="btnSignOut" class="ghost small">Sign out</button>
+      <button id="btnSignOut" class="ghost small" hidden>Sign out</button>
+      <button id="btnSignIn" class="ghost small" hidden>Sign in</button>
     </span>
   </header>
 

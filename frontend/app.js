@@ -1426,6 +1426,9 @@ function showGate(message = '') {
   gate.hidden = false;
   $('authError').textContent = message;
   $('whoami').hidden = true;
+  // Escapable only while sign-in is not enforced; once it is, the gate is the
+  // whole of the app and a dismiss button would be a hole in it.
+  $('authDismiss').hidden = state.requireAuth;
 }
 
 function hideGate() {
@@ -1440,14 +1443,27 @@ function applySession() {
     hideGate();
     $('whoami').hidden = false;
     $('whoamiEmail').textContent = user.email;
+    $('btnSignOut').hidden = false;
+    $('btnSignIn').hidden = true;
     $('btnAdmin').hidden = !isSuperAdmin();
     return;
   }
   // No pool configured (an older deployment, or the local test harness) means
-  // there is nothing to sign in to; the tool stays open.
-  if (!authConfigured()) { hideGate(); return; }
+  // there is nothing to sign in to; the tool stays open and says nothing.
+  if (!authConfigured()) { hideGate(); $('whoami').hidden = true; return; }
+
+  // Signed out, with a pool to sign in to. Enforced or not, there has to be a
+  // way in: while REQUIRE_AUTH is still false — the state the staged rollout
+  // spends its first day in — the gate is not shown, and without this button
+  // there is no route to the admin console at all. That was the flaw: the
+  // person who had just been made a super admin had nowhere to click.
+  $('whoami').hidden = false;
+  $('whoamiEmail').textContent = '';
+  $('btnSignOut').hidden = true;
+  $('btnAdmin').hidden = true;
+  $('btnSignIn').hidden = false;
   if (state.requireAuth) showGate();
-  else { hideGate(); $('whoami').hidden = true; }
+  else hideGate();
 }
 
 function askForNewPassword(email, session) {
@@ -1635,6 +1651,8 @@ window.addEventListener('DOMContentLoaded', () => {
   paintChecks();
   $('authForm').addEventListener('submit', submitAuth);
   $('btnSignOut').addEventListener('click', doSignOut);
+  $('btnSignIn').addEventListener('click', () => showGate());
+  $('authDismiss').addEventListener('click', () => { hideGate(); applySession(); });
   $('btnAdmin').addEventListener('click', openAdmin);
   $('btnAdminClose').addEventListener('click', () => $('adminModal').close());
   $('tabPeople').addEventListener('click', () => showAdminTab('people'));

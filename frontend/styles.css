@@ -391,3 +391,12 @@ dialog.sheet.docked .tab { padding: 7px 10px; font-size: 11.5px; }
 .pill-state { font-size: 11px; color: #6b7a92; }
 .pill-state.pending { color: #8a5a00; }
 .pill-state.off { color: #b3261e; }
+
+/* While sign-in is not yet enforced the gate must be escapable — otherwise the
+   staged rollout traps whoever opens the page. */
+.auth-dismiss {
+  display: block; width: 100%; margin-top: 10px; padding: 7px;
+  border: 0; background: none; color: #6b7a92; font-size: 12px; cursor: pointer;
+}
+.auth-dismiss:hover { color: #1c2a4f; text-decoration: underline; }
+.auth-dismiss[hidden] { display: none !important; }
