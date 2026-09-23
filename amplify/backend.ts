@@ -1,5 +1,5 @@
 import { defineBackend } from '@aws-amplify/backend';
-import { Duration, Stack } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
 import {
   CorsHttpMethod,
   HttpApi,
@@ -15,9 +15,71 @@ import {
   HttpMethod as FnUrlMethod,
   Runtime,
 } from 'aws-cdk-lib/aws-lambda';
+import { HttpJwtAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import { AttributeType, BillingMode, ProjectionType, Table } from 'aws-cdk-lib/aws-dynamodb';
+import { auth } from './auth/resource';
+import { adminApi } from './functions/admin/resource';
 import { bedrockProxy } from './functions/bedrock-proxy/resource';
 
-const backend = defineBackend({ bedrockProxy });
+const backend = defineBackend({ auth, adminApi, bedrockProxy });
+
+// ── Who may use this, and what they did ──────────────────────────────────────
+//
+// Accounts are created by a super admin, never by self sign-up: this is an
+// internal tool on a public URL. Cognito's own invitation mail carries the
+// temporary password, and the first sign-in forces a real one.
+const userPool = backend.auth.resources.userPool;
+const userPoolClient = backend.auth.resources.userPoolClient;
+
+// Self sign-up off, at the pool rather than in the UI — a hidden form is not a
+// control.
+const cfnUserPool = backend.auth.resources.cfnResources.cfnUserPool;
+cfnUserPool.adminCreateUserConfig = {
+  allowAdminCreateUserOnly: true,
+  inviteMessageTemplate: undefined,        // defineAuth supplies the wording
+};
+cfnUserPool.policies = {
+  passwordPolicy: {
+    minimumLength: 12,
+    requireLowercase: true,
+    requireUppercase: true,
+    requireNumbers: true,
+    requireSymbols: false,
+    temporaryPasswordValidityDays: 7,
+  },
+};
+
+// USER_PASSWORD_AUTH lets the browser sign in with a plain JSON POST to
+// Cognito. The frontend has no bundler, so pulling in Amplify's JS SDK to do
+// SRP would mean adding a build step to a static site; this keeps sign-in to
+// fetch() over TLS, which is what the SDK would do underneath anyway.
+const cfnClient = backend.auth.resources.cfnResources.cfnUserPoolClient;
+cfnClient.explicitAuthFlows = [
+  'ALLOW_USER_PASSWORD_AUTH',
+  'ALLOW_REFRESH_TOKEN_AUTH',
+];
+
+// One row per request: who, which route, when, how long, and a shallow summary
+// of the input. Never the document itself — a customer's process map is not
+// something to keep a second copy of for the sake of a log.
+const auditStack = backend.createStack('diagramiq-audit');
+const auditTable = new Table(auditStack, 'AuditLog', {
+  tableName: 'diagramiq-audit-log',
+  partitionKey: { name: 'pk', type: AttributeType.STRING },
+  sortKey: { name: 'sk', type: AttributeType.STRING },
+  billingMode: BillingMode.PAY_PER_REQUEST,
+  timeToLiveAttribute: 'expiresAt',
+  // The log outlives a stack rebuild on purpose: it is the record of who did
+  // what, and a teardown should not quietly erase it.
+  removalPolicy: RemovalPolicy.RETAIN,
+});
+// "Everything that happened on a day", without scanning the table.
+auditTable.addGlobalSecondaryIndex({
+  indexName: 'byDay',
+  partitionKey: { name: 'day', type: AttributeType.STRING },
+  sortKey: { name: 'ts', type: AttributeType.STRING },
+  projectionType: ProjectionType.ALL,
+});
 
 // Concurrent executions reserved for each DiagramIQ function. Generous for a
 // tool a handful of reviewers use at once, and small against the account pool.
@@ -42,6 +104,25 @@ if (proxyResource instanceof CfnFunction) {
   proxyResource.reservedConcurrentExecutions = RESERVED;
 }
 
+// Both request-handling functions learn who the caller is and write what they
+// did. REQUIRE_AUTH ships 'false': the login layer deploys before it is
+// enforced, so a mail-delivery problem cannot lock everyone — including the
+// administrator — out of a running tool. Flipping it is its own change.
+const REQUIRE_AUTH = process.env.DIAGRAMIQ_REQUIRE_AUTH ?? 'false';
+const authEnv = {
+  REQUIRE_AUTH,
+  USER_POOL_ID: userPool.userPoolId,
+  USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
+  AUDIT_TABLE: auditTable.tableName,
+};
+// Amplify types these as IFunction, which has no addEnvironment; the concrete
+// construct underneath does.
+const proxyFn = fn as LambdaFunction;
+for (const [key, value] of Object.entries(authEnv)) {
+  proxyFn.addEnvironment(key, value);
+}
+auditTable.grantWriteData(fn);
+
 // Public HTTP API in front of the Lambda (CORS open for the Amplify domain).
 const apiStack = backend.createStack('diagramiq-api');
 const httpApi = new HttpApi(apiStack, 'DiagramIQHttpApi', {
@@ -49,7 +130,10 @@ const httpApi = new HttpApi(apiStack, 'DiagramIQHttpApi', {
   corsPreflight: {
     allowOrigins: ['*'],
     allowMethods: [CorsHttpMethod.POST, CorsHttpMethod.OPTIONS],
-    allowHeaders: ['content-type'],
+    // The browser sends its token on every call, so the preflight has to allow
+    // the header. Leave it out and every authenticated request fails before it
+    // is made — as a CORS error with no status, which reads like an outage.
+    allowHeaders: ['content-type', 'authorization'],
   },
 });
 const integration = new HttpLambdaIntegration('BedrockProxyIntegration', fn);
@@ -97,6 +181,14 @@ pythonEngine.addToRolePolicy(
     resources: ['*'],
   }),
 );
+for (const [key, value] of Object.entries(authEnv)) {
+  pythonEngine.addEnvironment(key, value);
+}
+auditTable.grantWriteData(pythonEngine);
+// The engine verifies tokens by asking Cognito rather than by carrying a
+// crypto library: GetUser takes the caller's own access token, so no IAM
+// permission on the pool is needed for it.
+
 const pythonIntegration = new HttpLambdaIntegration(
   'PythonAnalyzerIntegration',
   pythonEngine,
@@ -168,7 +260,7 @@ for (const path of [
 const urlCors = {
   allowedOrigins: ['*'],
   allowedMethods: [FnUrlMethod.POST],
-  allowedHeaders: ['content-type'],
+  allowedHeaders: ['content-type', 'authorization'],
 };
 const engineUrl = pythonEngine.addFunctionUrl({
   authType: FunctionUrlAuthType.NONE,
@@ -179,12 +271,41 @@ const aiUrl = fn.addFunctionUrl({
   cors: urlCors,
 });
 
+// ── The super-admin console's backend ────────────────────────────────────────
+const adminFn = backend.adminApi.resources.lambda as LambdaFunction;
+adminFn.addEnvironment('USER_POOL_ID', userPool.userPoolId);
+adminFn.addEnvironment('USER_POOL_CLIENT_ID', userPoolClient.userPoolClientId);
+adminFn.addEnvironment('AUDIT_TABLE', auditTable.tableName);
+auditTable.grantReadWriteData(adminFn);
+adminFn.addToRolePolicy(
+  new PolicyStatement({
+    actions: [
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminAddUserToGroup',
+      'cognito-idp:AdminRemoveUserFromGroup',
+      'cognito-idp:AdminListGroupsForUser',
+      'cognito-idp:ListUsers',
+    ],
+    resources: [userPool.userPoolArn],
+  }),
+);
+const adminUrl = adminFn.addFunctionUrl({
+  authType: FunctionUrlAuthType.NONE,      // the handler refuses anyone who is
+  cors: urlCors,                           // not a verified super admin
+});
+
 // Expose the endpoints to the frontend via amplify_outputs.json.
 backend.addOutput({
   custom: {
     diagramiqApiUrl: httpApi.apiEndpoint,
     diagramiqEngineUrl: engineUrl.url,   // Python engine, no 30s ceiling
     diagramiqAiUrl: aiUrl.url,           // /convert and /feedback
+    diagramiqAdminUrl: adminUrl.url,     // super-admin console
+    userPoolId: userPool.userPoolId,
+    userPoolClientId: userPoolClient.userPoolClientId,
+    requireAuth: REQUIRE_AUTH,
     region: Stack.of(apiStack).region,
   },
 });

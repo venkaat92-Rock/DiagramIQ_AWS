@@ -59,6 +59,95 @@ Every edit you made must appear in "changes". If you changed nothing, "changes" 
 // function returns — so returning them too produced
 // `access-control-allow-origin: *, *`, which the browser rejects outright while
 // the function logs a clean 200. See the note in python-analyzer/index.py.
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
+
+/* ---------- who is calling, and what they did ------------------------------
+ *
+ * The engine verifies tokens by asking Cognito (no crypto library fits its
+ * pure-Python zip); here the library is available, so the token is verified
+ * locally against the pool's public keys — no network call per request.
+ *
+ * REQUIRE_AUTH gates enforcement, and ships false: deploying the login layer
+ * must not lock anyone out before someone has proved they can sign in.
+ */
+const REQUIRE_AUTH = ['1', 'true', 'yes'].includes(
+  String(process.env.REQUIRE_AUTH ?? 'false').trim().toLowerCase(),
+);
+const AUDIT_TABLE = process.env.AUDIT_TABLE ?? '';
+const RETENTION_DAYS = Number(process.env.AUDIT_RETENTION_DAYS ?? 400);
+
+const verifier = process.env.USER_POOL_ID
+  ? CognitoJwtVerifier.create({
+      userPoolId: process.env.USER_POOL_ID,
+      tokenUse: 'access',
+      clientId: process.env.USER_POOL_CLIENT_ID ?? null,
+    })
+  : null;
+
+const ddb = AUDIT_TABLE ? DynamoDBDocumentClient.from(new DynamoDBClient({})) : null;
+
+type Who = { sub: string; label: string };
+const ANONYMOUS: Who = { sub: 'anonymous', label: 'anonymous' };
+
+async function identify(event: any): Promise<Who> {
+  const header: string = event?.headers?.authorization ?? event?.headers?.Authorization ?? '';
+  const token = header.replace(/^Bearer\s+/i, '').trim();
+  if (!token) {
+    if (REQUIRE_AUTH) throw Object.assign(new Error('Sign in to use DiagramIQ.'), { status: 401 });
+    return ANONYMOUS;
+  }
+  if (!verifier) return ANONYMOUS;          // pool not wired yet
+  try {
+    const payload: any = await verifier.verify(token);
+    return { sub: payload.sub, label: payload.username ?? payload.sub };
+  } catch {
+    throw Object.assign(new Error('Your session has expired. Sign in again.'), { status: 401 });
+  }
+}
+
+/** A shallow summary of the request — never the image, never the model. */
+function summarise(body: any) {
+  const out: Record<string, unknown> = {};
+  if (!body || typeof body !== 'object') return out;
+  for (const key of ['modelId', 'mediaType', 'processName']) {
+    if (body[key]) out[key] = String(body[key]).slice(0, 160);
+  }
+  if (body.imageBase64) out.imageBytes = String(body.imageBase64).length;
+  if (body.feedback) out.feedbackChars = String(body.feedback).length;
+  if (body.model?.nodes) out.nodes = body.model.nodes.length;
+  return out;
+}
+
+async function audit(who: Who, action: string, status: number, startedAt: number,
+                     detail: Record<string, unknown>, error = '') {
+  if (!ddb) return;
+  const now = new Date();
+  try {
+    await ddb.send(new PutCommand({
+      TableName: AUDIT_TABLE,
+      Item: {
+        pk: `USER#${who.sub}`,
+        sk: `${now.toISOString()}#${Math.random().toString(36).slice(2, 8)}`,
+        day: now.toISOString().slice(0, 10),
+        ts: now.toISOString(),
+        actor: who.label,
+        actorSub: who.sub,
+        action,
+        surface: 'ai',
+        status,
+        ms: Date.now() - startedAt,
+        detail,
+        ...(error ? { error: error.slice(0, 160) } : {}),
+        expiresAt: Math.floor(now.getTime() / 1000) + RETENTION_DAYS * 86400,
+      },
+    }));
+  } catch (err) {
+    console.error('audit write failed', action, err);   // never fatal
+  }
+}
+
 const RESPONSE_HEADERS = { 'content-type': 'application/json' };
 
 const reply = (status: number, body: unknown) => ({
@@ -98,12 +187,28 @@ export const handler = async (event: any) => {
   } catch {
     return reply(400, { error: 'Invalid JSON body.' });
   }
+
+  const startedAt = Date.now();
+  const action = path.endsWith('/feedback') ? '/feedback' : '/convert';
+  const detail = summarise(body);
+  let who: Who;
+  try {
+    who = await identify(event);
+  } catch (err: any) {
+    await audit(ANONYMOUS, action, err.status ?? 401, startedAt, detail, err.message);
+    return reply(err.status ?? 401, { error: err.message });
+  }
+
+  const done = async (status: number, payload: unknown, error = '') => {
+    await audit(who, action, status, startedAt, detail, error);
+    return reply(status, payload);
+  };
   const modelId: string = body.modelId || process.env.MODEL_ID || 'us.anthropic.claude-opus-4-8-v1:0';
 
   try {
     if (path.endsWith('/convert')) {
       const b64: string = body.imageBase64 || '';
-      if (!b64) return reply(400, { error: 'imageBase64 is required.' });
+      if (!b64) return done(400, { error: 'imageBase64 is required.' }, 'imageBase64 is required');
       let format = String(body.mediaType || 'image/png').split('/').pop()!.toLowerCase();
       if (format === 'jpg') format = 'jpeg';
       if (!['png', 'jpeg', 'gif', 'webp'].includes(format)) format = 'png';
@@ -112,11 +217,11 @@ export const handler = async (event: any) => {
         { text: 'Extract this process. Return the JSON object only.' },
       ];
       const text = await converse(modelId, SYSTEM_EXTRACT, content);
-      return reply(200, { model: extractJson(text) });
+      return done(200, { model: extractJson(text) });
     }
 
     if (path.endsWith('/feedback')) {
-      if (!body.model || !body.feedback) return reply(400, { error: 'model and feedback are required.' });
+      if (!body.model || !body.feedback) return done(400, { error: 'model and feedback are required.' }, 'model and feedback are required');
       const prompt =
         'Current model JSON:\n' + JSON.stringify(body.model) +
         '\n\nReviewer feedback to apply:\n' + String(body.feedback) +
@@ -130,17 +235,17 @@ export const handler = async (event: any) => {
       if (!model) throw new Error('The model returned no "model" object.');
       const lines = (v: unknown) =>
         (Array.isArray(v) ? v : []).map((x) => String(x)).filter(Boolean).slice(0, 20);
-      return reply(200, {
+      return done(200, {
         model,
         changes: lines(out?.changes),
         notApplied: lines(out?.not_applied),
       });
     }
 
-    return reply(404, { error: `Unknown route: ${path}` });
+    return done(404, { error: `Unknown route: ${path}` }, 'unknown route');
   } catch (err: any) {
     const msg = err?.message || String(err);
     // Surface actionable Bedrock errors (model access / region) to the UI.
-    return reply(502, { error: `Bedrock call failed for '${modelId}': ${msg}` });
+    return done(502, { error: `Bedrock call failed for '${modelId}': ${msg}` }, msg);
   }
 };

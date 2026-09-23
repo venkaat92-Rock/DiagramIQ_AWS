@@ -89,6 +89,9 @@ const throttle = {};
 // delay[path] = ms to hold the response, so overlapping calls are observable
 const delay = {};
 let tableModeWorks = false;
+// What the server saw on the wire, and a switch to make a session lapse.
+const authHeaders = [];
+let expire401 = false;
 
 const MOCK = {
   '/notes': {
@@ -144,6 +147,11 @@ const server = http.createServer((req, res) => {
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
       seen.push(url.pathname);
+      if (req.headers.authorization) authHeaders.push(req.headers.authorization);
+      if (expire401) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Your session has ended. Sign in again.' }));
+      }
       bodies[url.pathname] = raw ? JSON.parse(raw) : {};
       (calls[url.pathname] = calls[url.pathname] || []).push(bodies[url.pathname]);
       // A table-only read is a different request: it never calls Bedrock, so
@@ -207,6 +215,11 @@ const server = http.createServer((req, res) => {
       ok:          { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/` },
       deadEngine:  { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
       allDead:     { diagramiqApiUrl: DEAD_B, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
+      // A deployment with sign-in switched on: the page has a pool to talk to
+      // and is told to require it.
+      secured:     { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/`,
+                     diagramiqAdminUrl: `${ORIGIN}/admin/`, region: 'us-west-2',
+                     userPoolId: 'us-west-2_test', userPoolClientId: 'testclient', requireAuth: 'true' },
     }[outputsMode];
     return res.end(JSON.stringify({ custom }));
   }
@@ -900,6 +913,116 @@ ok('and the message is no longer forced to a warning',
    (await page.getAttribute('#status', 'data-kind')) !== 'warn',
    await page.getAttribute('#status', 'data-kind'));
 if (await page.isVisible('#btnReviewCancel')) await page.click('#btnReviewCancel');
+outputsMode = 'ok';
+
+// ---- 24. The door: sign in, set a password, and be recognised -------------
+// Cognito is answered by the test itself, so what is exercised is the app's
+// half of the contract: which call it makes, what it does with a challenge,
+// and whether the token then rides on every request.
+const COGNITO = /cognito-idp\.[a-z0-9-]+\.amazonaws\.com/;
+const jwt = (claims) => {
+  const part = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return `${part({ alg: 'RS256' })}.${part(claims)}.signature`;
+};
+let cognitoMode = 'newPassword';         // first sign-in comes from an invite
+const cognitoCalls = [];
+await page.route(COGNITO, async (route) => {
+  const req = route.request();
+  const target = req.headers()['x-amz-target'] || '';
+  const body = JSON.parse(req.postData() || '{}');
+  cognitoCalls.push({ target, body });
+  const tokens = (groups) => ({
+    AuthenticationResult: {
+      AccessToken: jwt({ sub: 'sub-1', username: 'anna@example.com', 'cognito:groups': groups }),
+      IdToken: jwt({ email: 'anna@example.com' }),
+      RefreshToken: 'refresh-1',
+      ExpiresIn: 3600,
+    },
+  });
+  if (target.endsWith('InitiateAuth') && body.AuthParameters?.PASSWORD === 'wrong') {
+    return route.fulfill({ status: 400, contentType: 'application/x-amz-json-1.1',
+      body: JSON.stringify({ __type: 'NotAuthorizedException' }) });
+  }
+  if (target.endsWith('InitiateAuth') && cognitoMode === 'newPassword') {
+    return route.fulfill({ status: 200, contentType: 'application/x-amz-json-1.1',
+      body: JSON.stringify({ ChallengeName: 'NEW_PASSWORD_REQUIRED', Session: 'sess-1' }) });
+  }
+  if (target.endsWith('RespondToAuthChallenge')) {
+    cognitoMode = 'signedIn';
+    return route.fulfill({ status: 200, contentType: 'application/x-amz-json-1.1',
+      body: JSON.stringify(tokens(['superadmin'])) });
+  }
+  return route.fulfill({ status: 200, contentType: 'application/x-amz-json-1.1',
+    body: JSON.stringify(tokens(['superadmin'])) });
+});
+
+outputsMode = 'secured';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+ok('with sign-in required, the gate covers the tool', await page.isVisible('#authGate'));
+ok('and nobody is named in the header yet', !(await page.isVisible('#whoami')));
+
+// a wrong password says so, in words
+await page.fill('#authEmail', 'anna@example.com');
+await page.fill('#authPassword', 'wrong');
+await page.click('#authSubmit');
+await page.waitForTimeout(300);
+ok('a wrong password is reported plainly',
+   /do not match/.test(await page.textContent('#authError')), await page.textContent('#authError'));
+ok('and the gate stays shut', await page.isVisible('#authGate'));
+
+// the invitation path: temporary password, then choose a real one
+await page.fill('#authPassword', 'Temp-Password-1');
+await page.click('#authSubmit');
+await page.waitForTimeout(300);
+ok('a temporary password leads to setting a real one', await page.isVisible('#authNewWrap'));
+ok('and the email is carried over, not retyped',
+   (await page.inputValue('#authEmail')) === 'anna@example.com');
+
+await page.fill('#authNew1', 'Short');
+await page.fill('#authNew2', 'Short');
+await page.click('#authSubmit');
+await page.waitForTimeout(200);
+ok('a too-short password is refused before Cognito is troubled',
+   /at least 12/.test(await page.textContent('#authError')), await page.textContent('#authError'));
+
+await page.fill('#authNew1', 'Proper-Password-1');
+await page.fill('#authNew2', 'Different-Password-1');
+await page.click('#authSubmit');
+await page.waitForTimeout(200);
+ok('mismatched passwords are caught', /do not match/.test(await page.textContent('#authError')));
+
+await page.fill('#authNew2', 'Proper-Password-1');
+await page.click('#authSubmit');
+await page.waitForTimeout(500);
+ok('setting the password signs the person in', !(await page.isVisible('#authGate')));
+ok('and the header names them',
+   /anna@example.com/.test(await page.textContent('#whoami')), await page.textContent('#whoami'));
+ok('the challenge was answered with RespondToAuthChallenge',
+   cognitoCalls.some((c) => c.target.endsWith('RespondToAuthChallenge')));
+ok('a super admin is offered the admin console', await page.isVisible('#btnAdmin'));
+
+// ---- 25. The token rides on every request ---------------------------------
+seen.length = 0;
+authHeaders.length = 0;
+MOCK['/model'] = { model: MODEL };
+await page.setInputFiles('#bpmnInput', {
+  name: 'p.bpmn', mimeType: 'application/xml', buffer: Buffer.from(BPMN),
+});
+await page.waitForTimeout(600);
+ok('an authenticated call carries a bearer token',
+   authHeaders.some((h) => /^Bearer .+/.test(h)), authHeaders.slice(0, 2).join(' | '));
+
+// ---- 26. A session that lapses puts the door back -------------------------
+expire401 = true;
+await page.setInputFiles('#bpmnInput', {
+  name: 'p2.bpmn', mimeType: 'application/xml', buffer: Buffer.from(BPMN),
+});
+await page.waitForTimeout(600);
+ok('a 401 mid-session reopens the gate', await page.isVisible('#authGate'));
+ok('and says why', /session has ended/i.test(await page.textContent('#authError')),
+   await page.textContent('#authError'));
+expire401 = false;
 outputsMode = 'ok';
 
 console.log('\n--- results ---');

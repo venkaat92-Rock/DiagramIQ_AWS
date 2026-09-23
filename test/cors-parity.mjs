@@ -48,6 +48,15 @@ check('the function URL lists only values Cors.AllowMethods accepts — '
       + 'OPTIONS there fails the deploy',
       f.length > 0 && f.every((m) => FN_URL_VALID.has(m)));
 
+// The browser sends a bearer token on every call once sign-in is on. A
+// preflight that does not allow the header fails the request before it is
+// made — no status, no log line, and it reads exactly like an outage.
+const headerLists = [...src.matchAll(/allow(?:ed)?Headers:\s*\[([^\]]+)\]/g)].map((m) => m[1]);
+check('both endpoints allow the content-type header',
+      headerLists.length === 2 && headerLists.every((h) => /['"]content-type['"]/.test(h)));
+check('both endpoints allow the authorization header — the token rides on it',
+      headerLists.length === 2 && headerLists.every((h) => /['"]authorization['"]/i.test(h)));
+
 for (const file of HANDLERS) {
   // Comments explaining why the headers are absent must not count as setting
   // them, so only lines that look like a header assignment are inspected.
