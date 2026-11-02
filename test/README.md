@@ -52,6 +52,40 @@ text itself. It was confirmed to fail when enforcement is bypassed.
 python3 test/auth.py
 ```
 
+## Celonis
+
+`celonis.ts` and `celonis-auth.ts` (run with `npm run test:celonis`) exercise
+the Celonis path end-to-end with no Celonis tenant and no AWS account. The
+handler, the MCP client, the OAuth flow, the tool-use loop and the audit write
+are the real ones; what is faked is the tenant on the far side of the socket
+and the two AWS services, reached through the SDK's own endpoint environment
+variables (`AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, `AWS_ENDPOINT_URL_DYNAMODB`) so
+that no client is patched and no production code knows it is under test.
+`celonis-stub.ts` holds the fakes — note the Bedrock one speaks HTTP/2, because
+the Bedrock Runtime client does and an HTTP/1.1 stub fails with a bare
+"Protocol error" before the request is even sent.
+
+The checks that matter most:
+
+- a tool whose name suggests it writes is withheld from the model, **and**
+  refused if the model names it anyway;
+- a tool the tenant never published is refused;
+- the tenant's error text is fed back so the model can correct itself;
+- an exploration that will not settle is cut off, and the reviewer is told;
+- the audit row carries who asked and for which process, and never the mined
+  activities or the reviewer's question;
+- with `REQUIRE_AUTH=true`, both routes refuse before Celonis is touched at all
+  — including an unsigned token with well-formed admin claims.
+
+Each one was confirmed to fail when the thing it guards was deliberately
+broken. The browser half is in `e2e.mjs`, against mocks mounted under their own
+path prefix so the test can prove `/celonis/*` goes to the Celonis Function URL
+and not the engine's.
+
+What none of this covers: the tool names and result shapes of a **real** Agent
+Tools asset. No live tenant was available, which is why nothing in the code
+depends on them.
+
 ## What it does not cover
 
 Every `/…` call is answered by a mock in this file, so it proves the frontend's

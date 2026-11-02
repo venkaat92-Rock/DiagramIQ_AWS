@@ -8,11 +8,12 @@ import { renderSvg } from './svgPreview.js';
 import { createZoom } from './zoom.js';
 import { readDocx, canReadLocally } from './docxReader.js';
 import { discoveryFromTables, discoveryToModel } from './tableToDiscovery.js';
+import { initCelonis } from './celonis.js';
 
 const $ = (id) => document.getElementById(id);
 let zoom;                       // preview zoom/pan controller, built on load
 const state = {
-  apiUrl: '', adminUrl: '', requireAuth: false,
+  apiUrl: '', adminUrl: '', celonisUrl: '', requireAuth: false,
   model: null, xml: '', imageB64: '', mediaType: 'image/png', lastSop: null,
   // Engine state. `xml` is the working BPMN once anything produces one;
   // `changes` accumulates the patcher's change log for the uplift report.
@@ -92,6 +93,7 @@ async function loadOutputs() {
     state.engineUrl = trimSlash(o?.custom?.diagramiqEngineUrl);
     state.aiUrl = trimSlash(o?.custom?.diagramiqAiUrl);
     state.adminUrl = trimSlash(o?.custom?.diagramiqAdminUrl);
+    state.celonisUrl = trimSlash(o?.custom?.diagramiqCelonisUrl);
     state.requireAuth = String(o?.custom?.requireAuth ?? 'false').toLowerCase() === 'true';
     configureAuth({
       region: o?.custom?.region,
@@ -142,11 +144,16 @@ function clearImage() {
 
 /* ---------- API calls ------------------------------------------------------ */
 
-/** /convert and /feedback are the Node proxy; everything else is the Python
-    engine. Each goes direct to its Lambda when a Function URL is published. */
+/** Three functions behind one API. /convert and /feedback are the Node proxy,
+    /celonis/* reads a Celonis tenant over MCP, and everything else is the
+    Python engine. Each goes direct to its own Lambda when a Function URL is
+    published — the gateway's 29-second ceiling is fatal to all three of the
+    long paths. */
 const AI_PROXY_ROUTES = new Set(['/convert', '/feedback']);
 function endpointFor(path) {
-  const direct = AI_PROXY_ROUTES.has(path) ? state.aiUrl : state.engineUrl;
+  let direct = state.engineUrl;
+  if (AI_PROXY_ROUTES.has(path)) direct = state.aiUrl;
+  else if (path.startsWith('/celonis/')) direct = state.celonisUrl;
   return direct || state.apiUrl;
 }
 
@@ -763,6 +770,10 @@ function openReview(discovery, title, mode = 'build') {
   // the warning left by the SOP read before it.
   $('revDegraded').hidden = true;
   $('btnRetryAi').hidden = true;
+  // Where the steps came from: filled by the Celonis path, and cleared here so
+  // the next input cannot inherit somebody else's evidence.
+  $('revNotes').hidden = true;
+  $('revNotes').innerHTML = '';
   state.discovery = discovery;
   state.reviewMode = mode;
   $('btnApproveBuild').textContent = mode === 'patch'
@@ -1702,6 +1713,13 @@ window.addEventListener('DOMContentLoaded', () => {
   $('notesInput').addEventListener('change', (e) => acceptNotes(e.target.files[0]));
   $('sopInput').addEventListener('change', (e) => acceptSop(e.target.files[0]));
   $('btnRetryAi').addEventListener('click', retryAiReading);
+  // Celonis lives in its own module: it needs the API caller, the review grid
+  // and the status line, and nothing else in here needs to know about MCP.
+  initCelonis({
+    post, openReview, setBusy, setStatus,
+    modelId: currentModelId,
+    processName: () => $('processName').value.trim(),
+  });
 
   // ---- engine: actions ----
   $('btnValidate').addEventListener('click', validate);

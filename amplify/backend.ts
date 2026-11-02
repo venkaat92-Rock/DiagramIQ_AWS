@@ -20,8 +20,9 @@ import { AttributeType, BillingMode, ProjectionType, Table } from 'aws-cdk-lib/a
 import { auth } from './auth/resource';
 import { adminApi } from './functions/admin/resource';
 import { bedrockProxy } from './functions/bedrock-proxy/resource';
+import { celonisApi } from './functions/celonis/resource';
 
-const backend = defineBackend({ auth, adminApi, bedrockProxy });
+const backend = defineBackend({ auth, adminApi, bedrockProxy, celonisApi });
 
 // ── Who may use this, and what they did ──────────────────────────────────────
 //
@@ -84,6 +85,12 @@ auditTable.addGlobalSecondaryIndex({
 // Concurrent executions reserved for each DiagramIQ function. Generous for a
 // tool a handful of reviewers use at once, and small against the account pool.
 const RESERVED = 10;
+
+// Where the Celonis connection details live. One parameter per field, set with
+// the AWS CLI after deployment (see README, "Connecting Celonis"); the client
+// secret as a SecureString. Nothing here creates them — a stack that owned
+// them would print a customer's client secret in its own template.
+const CELONIS_SSM_PREFIX = '/diagramiq/celonis';
 
 // Allow the proxy to call Bedrock models (incl. cross-region inference
 // profiles). Tighten `resources` to specific model ARNs if your org requires.
@@ -271,6 +278,71 @@ const aiUrl = fn.addFunctionUrl({
   cors: urlCors,
 });
 
+// ── Celonis: process mining in, BPMN out ────────────────────────────────────
+//
+// Reads a Celonis tenant over MCP (the Agent Tools asset a customer publishes
+// in Celonis Studio) and returns the same `discovery` object every other input
+// produces, so it lands in the existing review grid and is drawn by the
+// existing builder.
+//
+// The connection details are NOT wired here. They live in SSM Parameter Store
+// under /diagramiq/celonis/* and are read at runtime. An Amplify secret would
+// be resolved at deploy time, which would mean this stack cannot deploy until
+// somebody has set a Celonis client secret — i.e. adding this feature would
+// take the live app down for every customer who does not use Celonis. Reading
+// SSM at runtime makes "not connected yet" a message in the UI instead.
+const celonisFn = backend.celonisApi.resources.lambda as LambdaFunction;
+for (const [key, value] of Object.entries(authEnv)) {
+  celonisFn.addEnvironment(key, value);
+}
+celonisFn.addEnvironment('CELONIS_SSM_PREFIX', CELONIS_SSM_PREFIX);
+auditTable.grantWriteData(celonisFn);
+// The model drives the MCP tools, so this function calls Bedrock itself.
+celonisFn.addToRolePolicy(
+  new PolicyStatement({
+    actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+    resources: ['*'],
+  }),
+);
+// Read — and only read — the Celonis connection parameters. Scoped to the one
+// prefix: a function that can read every parameter in the account is a
+// credential-harvesting tool waiting for a prompt injection, and this one
+// feeds untrusted tenant data to a model by design.
+celonisFn.addToRolePolicy(
+  new PolicyStatement({
+    actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'],
+    resources: [
+      `arn:aws:ssm:${Stack.of(apiStack).region}:${Stack.of(apiStack).account}`
+      + `:parameter${CELONIS_SSM_PREFIX}`,
+      `arn:aws:ssm:${Stack.of(apiStack).region}:${Stack.of(apiStack).account}`
+      + `:parameter${CELONIS_SSM_PREFIX}/*`,
+    ],
+  }),
+);
+const celonisResource = celonisFn.node.defaultChild;
+if (celonisResource instanceof CfnFunction) {
+  celonisResource.reservedConcurrentExecutions = RESERVED;
+}
+
+const celonisIntegration = new HttpLambdaIntegration(
+  'CelonisIntegration',
+  celonisFn,
+);
+for (const path of ['/celonis/status', '/celonis/discover']) {
+  httpApi.addRoutes({
+    path,
+    methods: [HttpMethod.POST],
+    integration: celonisIntegration,
+  });
+}
+// A mining run is a dozen round trips between the model and the tenant, so it
+// routinely outlives the HTTP API's 29s ceiling. Same reasoning, and the same
+// CORS spelling, as the engine and proxy URLs above.
+const celonisUrl = celonisFn.addFunctionUrl({
+  authType: FunctionUrlAuthType.NONE,
+  cors: urlCors,
+});
+
 // ── The super-admin console's backend ────────────────────────────────────────
 const adminFn = backend.adminApi.resources.lambda as LambdaFunction;
 adminFn.addEnvironment('USER_POOL_ID', userPool.userPoolId);
@@ -303,6 +375,8 @@ backend.addOutput({
     diagramiqEngineUrl: engineUrl.url,   // Python engine, no 30s ceiling
     diagramiqAiUrl: aiUrl.url,           // /convert and /feedback
     diagramiqAdminUrl: adminUrl.url,     // super-admin console
+    diagramiqCelonisUrl: celonisUrl.url, // Celonis MCP → discovery
+    celonisSsmPrefix: CELONIS_SSM_PREFIX,
     userPoolId: userPool.userPoolId,
     userPoolClientId: userPoolClient.userPoolClientId,
     requireAuth: REQUIRE_AUTH,

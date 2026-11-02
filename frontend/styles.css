@@ -400,3 +400,72 @@ dialog.sheet.docked .tab { padding: 7px 10px; font-size: 11.5px; }
 }
 .auth-dismiss:hover { color: #1c2a4f; text-decoration: underline; }
 .auth-dismiss[hidden] { display: none !important; }
+
+/* ── Celonis panel and the review grid's evidence block ─────────────────────
+   The mining path is the one input whose output nobody can check against a
+   source document: there is no diagram and no SOP to hold it up against, only
+   an event log in somebody else's system. So what the model read, and what it
+   decided, is shown in the grid where the approval happens — not in a status
+   line that the next message overwrites. */
+#btnCelonis.mine {
+  border-color: var(--line);
+  background: #fbfcfd;
+}
+.sheet.narrow { max-width: 620px; }
+.sheet-body label.stack {
+  display: block;
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #5a6b7d;
+}
+.sheet-body label.stack input,
+.sheet-body label.stack textarea {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+.celonis-msg {
+  margin: 12px 0 0;
+  min-height: 1.2em;
+  white-space: pre-line;
+  font-size: 13px;
+}
+.celonis-msg[data-kind='error'] { color: var(--err); }
+.celonis-msg[data-kind='ok'] { color: var(--ok); }
+.celonis-tools-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+  font-size: 12.5px;
+}
+ul.celonis-tools { margin: 6px 0 0; padding-left: 18px; }
+ul.celonis-tools li { margin: 2px 0; }
+.rev-notes {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: #fbfcfd;
+  font-size: 13px;
+}
+.rev-notes p { margin: 0 0 6px; }
+.rev-notes ul { margin: 0 0 6px; padding-left: 18px; }
+
+table.rev-counts {
+  width: 100%;
+  margin: 6px 0 0;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+table.rev-counts th,
+table.rev-counts td {
+  text-align: left;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.rev-counts th { color: #5a6b7d; font-weight: 600; }

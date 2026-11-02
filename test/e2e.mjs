@@ -42,6 +42,26 @@ const MODEL3 = {
   nodes: MODEL.nodes.map((n) => (n.id === 't1' ? { ...n, name: 'Raise purchase requisition' } : n)),
 };
 
+// What a mining run gives back: activities with the counts the event log held.
+const MINED = {
+  process_name: 'Accounts Payable',
+  trigger_event: 'Invoice received',
+  successful_outcome: 'Invoice paid',
+  unsuccessful_outcome: 'Invoice rejected',
+  steps: [
+    { activity: 'Scan Invoice', description: 'Invoice is digitised', participant: 'AP Clerk',
+      it_systems: 'SAP', input_document: '', output_document: '', templates: '',
+      dependency: '', frequency: '12,480 cases', pain_points: '' },
+    { activity: 'Match to PO', description: 'Three-way match', participant: 'AP Clerk',
+      it_systems: 'SAP', input_document: '', output_document: '', templates: '',
+      dependency: '', frequency: '11,920 cases', pain_points: '' },
+    { activity: 'Clarify with Supplier', description: 'Query raised', participant: 'AP Clerk',
+      it_systems: 'Outlook', input_document: '', output_document: '', templates: '',
+      dependency: 'PO mismatch', frequency: '2,140 cases',
+      pain_points: '2,110 cases loop back to Match to PO' },
+  ],
+};
+
 const DISCOVERY = {
   process_name: 'Procurement intake',
   trigger_event: 'Requester needs goods',
@@ -105,6 +125,31 @@ const MOCK = {
   '/excel-to-discovery': { discovery: DISCOVERY },
   '/discovery-xlsx': { fileBase64: XLSX_B64, filename: 'Procurement.discovery.xlsx' },
   '/discovery-to-bpmn': { xml: BPMN, model: MODEL, fileBase64: XLSX_B64, filename: 'x.xlsx' },
+  // The Celonis function, mounted under its own prefix: the frontend has to
+  // send /celonis/* to the Celonis Function URL, not to the engine's, and the
+  // only way to prove it did is for the two to have different paths.
+  '/celonisfn/celonis/status': {
+    connected: true,
+    team: 'https://acme.eu-1.celonis.cloud',
+    tools: [
+      { name: 'list_data_models', description: 'List the data models published to this team.' },
+      { name: 'get_activities', description: 'Activity names with case counts.' },
+      { name: 'get_directly_follows', description: 'Directly-follows relations, with counts.' },
+    ],
+    blocked: ['trigger_action_flow'],
+  },
+  '/celonisfn/celonis/discover': {
+    discovery: MINED,
+    notes: ['Dropped the variant tail below 2% of cases.',
+            'Two data models matched; read AP_Invoices_EU.'],
+    toolCalls: [
+      { tool: 'list_data_models', ok: true, chars: 64 },
+      { tool: 'get_activities', ok: true, chars: 820 },
+      { tool: 'get_directly_follows', ok: true, chars: 410 },
+      { tool: 'get_variants', ok: false, chars: 0, error: 'No such object' },
+    ],
+    tools: ['list_data_models', 'get_activities', 'get_directly_follows'],
+  },
   '/model': { model: MODEL },
   '/bpmn-to-excel': { fileBase64: XLSX_B64, filename: 'review.xlsx' },
   '/visio': { xml: BPMN, model: MODEL },
@@ -212,7 +257,8 @@ const server = http.createServer((req, res) => {
     // DEAD_* point at ports nothing listens on, which is what an endpoint
     // without a CORS configuration looks like to fetch: no status, no body.
     const custom = {
-      ok:          { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/` },
+      ok:          { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${ORIGIN}/`, diagramiqAiUrl: `${ORIGIN}/`,
+                     diagramiqCelonisUrl: `${ORIGIN}/celonisfn/` },
       deadEngine:  { diagramiqApiUrl: ORIGIN, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
       allDead:     { diagramiqApiUrl: DEAD_B, diagramiqEngineUrl: `${DEAD_A}/`, diagramiqAiUrl: `${DEAD_A}/` },
       // A deployment with sign-in switched on: the page has a pool to talk to
@@ -1072,6 +1118,134 @@ await page.goto(`${ORIGIN}/`);
 await page.waitForTimeout(400);
 ok('once enforced, the gate has no way past it', !(await page.isVisible('#authDismiss')));
 outputsMode = 'ok';
+
+// ---- Celonis: process mining in, a reviewable process out ----------------
+//
+// The mining path is the only input with no document behind it: a reviewer
+// cannot hold the steps up against a source, only against what the model says
+// it read. So these checks are as much about the evidence shown in the grid as
+// about the steps themselves.
+outputsMode = 'ok';
+await page.goto(`${ORIGIN}/`);
+await page.waitForTimeout(400);
+
+ok('the Celonis input is offered alongside the file inputs',
+   await page.isVisible('#btnCelonis'), (await page.textContent('#btnCelonis')).trim());
+await page.click('#btnCelonis');
+await page.waitForTimeout(150);
+ok('it opens a panel of its own', await page.isVisible('#celonisModal'));
+ok('the panel says the connection is read-only',
+   /reads only|never trigger|only: nothing/i.test(await page.textContent('#celonisModal')));
+
+// Check connection: no model call, just the handshake and the tool list.
+await page.click('#btnCelonisCheck');
+await page.waitForTimeout(300);
+ok('the connection check goes to the Celonis function, not the engine',
+   seen.includes('/celonisfn/celonis/status') && !seen.includes('/celonis/status'),
+   seen.filter((p) => p.includes('celonis')).join(','));
+ok('the tools the tenant published are shown',
+   /get_directly_follows/.test(await page.textContent('#celonisTools')));
+ok('and the tool withheld as not read-only is named',
+   /trigger_action_flow/.test(await page.textContent('#celonisTools')));
+ok('the tenant it connected to is named',
+   /acme\.eu-1\.celonis\.cloud/.test(await page.textContent('#celonisMsg')),
+   await page.textContent('#celonisMsg'));
+
+// A run with nothing asked must not reach the backend.
+const celonisCallsBefore = (calls['/celonisfn/celonis/discover'] || []).length;
+await page.click('#btnCelonisRun');
+await page.waitForTimeout(200);
+ok('a run with no process named is refused in the browser',
+   (calls['/celonisfn/celonis/discover'] || []).length === celonisCallsBefore
+   && /Name the process/.test(await page.textContent('#celonisMsg')),
+   await page.textContent('#celonisMsg'));
+
+await page.fill('#celonisProcess', 'Accounts Payable');
+await page.fill('#celonisQuestion', 'main path only, and where invoices get reworked');
+await page.click('#btnCelonisRun');
+await page.waitForTimeout(500);
+
+const mineBody = bodies['/celonisfn/celonis/discover'] || {};
+ok('the run sends the process and the question',
+   mineBody.processName === 'Accounts Payable' && /reworked/.test(mineBody.question || ''),
+   JSON.stringify(mineBody).slice(0, 120));
+ok('the run uses the model chosen in the UI',
+   /^us\.anthropic\.claude-opus/.test(mineBody.modelId || ''), mineBody.modelId);
+const mined = !(await page.isVisible('#celonisModal'))
+              && await page.isVisible('#reviewModal');
+ok('the panel closes and the review grid opens on the mined steps', mined,
+   mined ? '' : `panel still says: ${(await page.textContent('#celonisMsg')).slice(0, 160)}`);
+ok('the grid is titled as a Celonis reading',
+   /Celonis/.test(await page.textContent('#reviewTitle')),
+   await page.textContent('#reviewTitle'));
+if (!mined) {
+  // A failed run makes every check below meaningless: say so, rather than
+  // clicking at a grid that is not there and dying on a Playwright timeout.
+  for (const name of ['every mined activity is in the grid',
+                      'the mined counts are shown where the approval happens',
+                      'a loop the event log shows is named, not quietly dropped',
+                      'the grid shows which Celonis tools were read',
+                      "the model's judgement calls are shown next to the approval",
+                      'a tool call that failed is not hidden from the reviewer',
+                      'approving the mined steps builds the BPMN',
+                      'and the diagram is on screen afterwards',
+                      'the mined counts survive approval even though the grid has no column for them',
+                      'the Celonis evidence does not follow the next input into the grid']) {
+    ok(name, false, 'skipped — the mining run did not reach the grid');
+  }
+} else {
+// The cells are textareas, and a value set in script is not in the DOM text —
+// reading textContent here would pass on an empty grid.
+const gridActivities = await page.$$eval('#revTable tbody textarea[data-key="activity"]',
+                                         (els) => els.map((e) => e.value));
+ok('every mined activity is in the grid',
+   gridActivities.join('|') === 'Scan Invoice|Match to PO|Clarify with Supplier',
+   gridActivities.join('|'));
+// The grid itself shows five columns, shared with every other input, so the
+// counts are shown in the evidence block above it rather than squeezed in.
+ok('the mined counts are shown where the approval happens',
+   /12,480 cases/.test(await page.textContent('#revNotes'))
+   && /2,140 cases/.test(await page.textContent('#revNotes')),
+   (await page.textContent('#revNotes')).slice(0, 200));
+ok('a loop the event log shows is named, not quietly dropped',
+   /loop back to Match to PO/.test(await page.textContent('#revNotes')));
+
+
+// The evidence block: what was read, and what the model decided for itself.
+ok('the grid shows which Celonis tools were read',
+   await page.isVisible('#revNotes')
+   && /get_activities/.test(await page.textContent('#revNotes')));
+ok("the model's judgement calls are shown next to the approval",
+   /variant tail/.test(await page.textContent('#revNotes')));
+ok('a tool call that failed is not hidden from the reviewer',
+   /get_variants/.test(await page.textContent('#revNotes')),
+   (await page.textContent('#revNotes')).slice(0, 160));
+
+// Approving a mined process goes down the same road as every other input.
+await page.click('#btnApproveBuild');
+await page.waitForTimeout(600);
+ok('approving the mined steps builds the BPMN',
+   seen.includes('/discovery-to-bpmn')
+   && (bodies['/discovery-to-bpmn']?.discovery?.steps || []).length === 3,
+   String((bodies['/discovery-to-bpmn']?.discovery?.steps || []).length));
+// The grid does not show the counts, so this is the only thing proving they
+// are not lost on the way through it — they end up in the exported workbook.
+ok('the mined counts survive approval even though the grid has no column for them',
+   bodies['/discovery-to-bpmn']?.discovery?.steps?.[0]?.frequency === '12,480 cases',
+   bodies['/discovery-to-bpmn']?.discovery?.steps?.[0]?.frequency);
+ok('and the diagram is on screen afterwards', await page.isVisible('#svgPane svg'));
+
+// The evidence belongs to that one reading. A later input must not inherit it.
+await page.setInputFiles('#excelInput', {
+  name: 'Procurement.xlsx',
+  mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  buffer: Buffer.from('PK-fake-xlsx'),
+});
+await page.waitForTimeout(400);
+ok('the Celonis evidence does not follow the next input into the grid',
+   !(await page.isVisible('#revNotes')));
+await page.click('#btnReviewCancel');
+}
 
 console.log('\n--- results ---');
 let pass = true;
