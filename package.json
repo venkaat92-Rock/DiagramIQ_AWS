@@ -10,7 +10,8 @@
     "test:e2e": "node test/e2e.mjs",
     "test:cors": "node test/cors-parity.mjs",
     "test:routes": "python3 test/route_split.py",
-    "test:auth": "python3 test/auth.py"
+    "test:auth": "python3 test/auth.py",
+    "test:celonis": "tsx test/celonis.ts && tsx test/celonis-auth.ts"
   },
   "devDependencies": {
     "@aws-amplify/backend": "^1.16.1",
@@ -26,7 +27,9 @@
     "@aws-sdk/client-bedrock-runtime": "^3.750.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1138.0",
     "@aws-sdk/client-dynamodb": "^3.1138.0",
+    "@aws-sdk/client-ssm": "^3.1161.0",
     "@aws-sdk/lib-dynamodb": "^3.1138.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "aws-jwt-verify": "^5.2.1"
   }
 }

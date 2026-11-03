@@ -66,6 +66,7 @@
     <label class="filebtn" title="An SOP or work instruction — Word or PDF. Clauses, step tables and figures are read together.">⬆ SOP / Document
       <input id="sopInput" type="file" accept=".docx,.pdf" />
     </label>
+    <button id="btnCelonis" class="filebtn mine" title="Read a process from a Celonis tenant over MCP — the activities, their order and their frequencies, as the event log recorded them.">⛏ Celonis (mining)</button>
     <button id="btnConvert" disabled>✨ AI Convert</button>
     <label>Process name
       <input id="processName" type="text" placeholder="e.g. Material Master Creation" />
@@ -163,6 +164,7 @@
       </div>
     </header>
     <div class="sheet-body">
+      <div id="revNotes" class="rev-notes" hidden></div>
       <div class="meta-grid">
         <label>Process name<input id="revName" type="text" /></label>
         <label>Trigger event<input id="revTrigger" type="text" /></label>
@@ -249,6 +251,37 @@
       <span id="insightCount" class="muted"></span>
       <span class="spacer"></span>
       <button id="btnInsightOk">Close</button>
+    </footer>
+  </dialog>
+
+  <dialog id="celonisModal" class="sheet narrow">
+    <header>
+      <h3>Draw a process from Celonis</h3>
+      <div class="sheet-actions">
+        <button id="btnCelonisClose" class="ghost icon" aria-label="Close">✕</button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <p class="tabhint">DiagramIQ reads your Celonis tenant through its MCP server —
+        the activities that actually ran, the order they ran in, how often, and who
+        performed them — and turns that into a reviewable process definition. It reads
+        only: nothing here can trigger an automation in your tenant.</p>
+      <label class="stack">Process to model
+        <input id="celonisProcess" type="text"
+               placeholder="e.g. Accounts Payable, or the data model's name" />
+      </label>
+      <label class="stack">What should it look for? <span class="muted">(optional)</span>
+        <textarea id="celonisQuestion" rows="3"
+                  placeholder="e.g. the main path only, and show where invoices get reworked"></textarea>
+      </label>
+      <p id="celonisMsg" class="celonis-msg" role="status"></p>
+      <div id="celonisTools" class="celonis-tools-box" hidden></div>
+    </div>
+    <footer>
+      <button id="btnCelonisCheck" class="ghost">⇄ Check connection</button>
+      <span class="spacer"></span>
+      <button id="btnCelonisCancel" class="ghost">Cancel</button>
+      <button id="btnCelonisRun">⛏ Read &amp; draw</button>
     </footer>
   </dialog>
 
