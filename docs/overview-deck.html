@@ -1,0 +1,486 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>DiagramIQ</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  :root{
+    --ink:#0e1b32; --ink2:#33445f; --muted:#6b7a92;
+    --brand:#1b3fa0; --brand2:#3b6bf0; --accent:#ff7a2f; --teal:#0e9e8c;
+    --wash:#f2f5fb; --line:#dde4f0; --good:#11a37f;
+  }
+  html,body{margin:0;padding:0;}
+  body{
+    font:11pt/1.5 "Segoe UI",-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;
+    color:var(--ink); background:#fff; -webkit-print-color-adjust:exact; print-color-adjust:exact;
+  }
+  .page{ width:210mm; height:296mm; padding:15mm 14mm; page-break-after:always; position:relative; overflow:hidden;}
+  .page:last-child{page-break-after:auto;}
+  h1{font-size:40pt;line-height:1.02;margin:0 0 6px;letter-spacing:-1.2px;}
+  h2{font-size:19pt;margin:0 0 4px;letter-spacing:-0.4px;}
+  h3{font-size:12.5pt;margin:0 0 4px;}
+  p{margin:0 0 9px;}
+  .eyebrow{font-size:8.5pt;letter-spacing:2.4px;text-transform:uppercase;color:var(--brand2);font-weight:700;}
+  .lede{font-size:13pt;line-height:1.45;color:var(--ink2);}
+  .muted{color:var(--muted);}
+  .small{font-size:9pt;}
+  .tiny{font-size:7.8pt;line-height:1.4;}
+  .rule{height:4px;width:64px;background:var(--accent);border-radius:2px;margin:14px 0 18px;}
+  .sec-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;border-bottom:2px solid var(--line);padding-bottom:8px;}
+  .sec-num{font-size:26pt;font-weight:800;color:var(--line);line-height:1;letter-spacing:-1px;}
+
+  /* cover */
+  .cover{background:linear-gradient(150deg,#0e1b32 0%,#173a86 55%,#1b4fbd 100%);color:#fff;}
+  .cover h1{color:#fff;}
+  .cover .lede{color:#c8d8ff;}
+  .cover .eyebrow{color:#7fb0ff;}
+  .cover-panel{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);
+    border-radius:10px;padding:14px 16px;margin-top:16px;}
+  .cover-panel p{color:#dce7ff;margin:0;}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px;}
+  .stat{background:#fff;border-radius:10px;padding:14px 12px;text-align:center;}
+  .stat .n{font-size:27pt;font-weight:800;letter-spacing:-1.5px;color:var(--brand);line-height:1;}
+  .stat .n span{font-size:14pt;}
+  .stat .l{font-size:8.2pt;color:var(--ink2);margin-top:6px;line-height:1.35;}
+  .cover .stat{background:rgba(255,255,255,.95);}
+  .cover .stat .n{color:var(--brand);}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;}
+  .card{background:var(--wash);border:1px solid var(--line);border-radius:9px;padding:12px 13px;}
+  .card h3{color:var(--brand);}
+  .card p{margin:0;font-size:9.4pt;line-height:1.45;color:var(--ink2);}
+  .card .big{font-size:20pt;font-weight:800;color:var(--accent);letter-spacing:-1px;line-height:1;margin-bottom:4px;}
+
+  .bars{margin:6px 0 4px;}
+  .bar-row{display:grid;grid-template-columns:52mm 1fr 16mm;align-items:center;gap:8px;margin-bottom:7px;font-size:9.2pt;}
+  .track{display:block;background:#e8edf7;border-radius:4px;height:15px;overflow:hidden;}
+  .fill{display:block;height:100%;background:linear-gradient(90deg,var(--brand2),var(--brand));border-radius:4px;}
+  .fill.warm{background:linear-gradient(90deg,#ffb066,var(--accent));}
+  .fill.good{background:linear-gradient(90deg,#4fd0b4,var(--teal));}
+  .val{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;}
+
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:6px 0 12px;}
+  .step{border:1px solid var(--line);border-radius:9px;padding:11px;position:relative;background:#fff;}
+  .step .k{width:26px;height:26px;border-radius:50%;background:var(--brand);color:#fff;font-weight:800;
+    display:flex;align-items:center;justify-content:center;font-size:11pt;margin-bottom:8px;}
+  .step h3{font-size:10.5pt;margin-bottom:3px;}
+  .step p{font-size:8.6pt;line-height:1.4;color:var(--ink2);margin:0;}
+  .step.hi{border-color:var(--accent);background:#fff8f2;}
+  .step.hi .k{background:var(--accent);}
+
+  table{width:100%;border-collapse:collapse;font-size:9pt;}
+  th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;}
+  th{background:var(--wash);font-size:8.4pt;text-transform:uppercase;letter-spacing:.6px;color:var(--ink2);}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;}
+  .tick{color:var(--good);font-weight:800;}
+  .cross{color:#c9ced8;font-weight:800;}
+  .part{color:var(--accent);font-weight:800;}
+  tr.total td{background:#eef3ff;font-weight:800;border-top:2px solid var(--brand2);}
+
+  .callout{border-left:4px solid var(--accent);background:#fff6ef;border-radius:0 8px 8px 0;padding:11px 14px;margin:12px 0;}
+  .callout p{margin:0;font-size:9.6pt;color:#5a3a1e;}
+  .note{background:#f7f9fd;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin-top:10px;}
+  .foot{position:absolute;bottom:9mm;left:14mm;right:14mm;display:flex;justify-content:space-between;
+    font-size:7.6pt;color:var(--muted);border-top:1px solid var(--line);padding-top:6px;}
+  .flowstrip{display:grid;grid-template-columns:1fr 12px 1fr 12px 1fr 12px 1fr;gap:6px;align-items:stretch;margin-top:26px;}
+  .fs{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:11px 10px;}
+  .fs.hi{background:rgba(255,122,47,.18);border-color:rgba(255,150,90,.55);}
+  .fsk{width:21px;height:21px;border-radius:50%;background:#7fb0ff;color:#0e1b32;font-weight:800;font-size:9pt;
+       display:flex;align-items:center;justify-content:center;margin-bottom:7px;}
+  .fs.hi .fsk{background:var(--accent);color:#fff;}
+  .fst{font-weight:700;font-size:10pt;color:#fff;margin-bottom:3px;}
+  .fsd{font-size:8pt;line-height:1.35;color:#b9cdf5;}
+  .fsarrow{display:flex;align-items:center;justify-content:center;color:#7fb0ff;font-size:13pt;}
+  .who{display:grid;grid-template-columns:1fr 52mm;gap:16px;align-items:center;margin-top:26px;
+       border-top:1px solid rgba(255,255,255,.18);padding-top:18px;}
+  .who-num{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.18);border-radius:10px;
+           padding:14px;text-align:center;color:#fff;}
+  .example{display:grid;grid-template-columns:1fr 10px 1fr 10px 1fr 10px 1fr 10px 1fr;gap:6px;align-items:stretch;margin-top:8px;}
+  .ex{background:var(--wash);border:1px solid var(--line);border-radius:9px;padding:10px 8px;text-align:center;}
+  .ex.hi{background:#fff6ef;border-color:#fbd9bd;}
+  .exn{font-size:20pt;font-weight:800;color:var(--brand);letter-spacing:-1px;line-height:1;}
+  .ex.hi .exn{color:var(--accent);}
+  .exl{font-size:7.6pt;line-height:1.35;color:var(--ink2);margin-top:5px;}
+  .exarrow{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11pt;}
+  .pill{display:inline-block;background:#e7edfb;color:var(--brand);border-radius:20px;
+    padding:2px 9px;font-size:8pt;font-weight:700;margin:0 4px 4px 0;}
+</style></head><body>
+
+<!-- ─────────────── 1. COVER ─────────────── -->
+<section class="page cover">
+  <div class="eyebrow">Process Consulting Accelerator</div>
+  <h1>DiagramIQ</h1>
+  <div class="rule"></div>
+  <p class="lede">It turns the way work is <em>described</em> into the way work is <em>modelled</em>.</p>
+
+  <div class="cover-panel">
+    <p><strong style="color:#fff">In one sentence, for anyone:</strong> hand it a standard operating procedure,
+    a meeting transcript, a spreadsheet, a Visio file or a photograph of a whiteboard — it reads the material the
+    way a business analyst would, shows you what it understood so a human can correct it, and then produces a
+    proper process map: the BPMN 2.0 kind that opens straight in Signavio, Camunda or bpmn.io.</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">80<span>%</span></div><div class="l">less analyst effort per process map</div></div>
+    <div class="stat"><div class="n">6h <span>→</span> 1.2h</div><div class="l">per process, end to end</div></div>
+    <div class="stat"><div class="n">~2<span> min</span></div><div class="l">to a reviewable first draft</div></div>
+    <div class="stat"><div class="n">6</div><div class="l">input types accepted, no re-keying</div></div>
+  </div>
+
+  <div style="margin-top:22px">
+    <div class="eyebrow" style="color:#7fb0ff">What it accepts</div>
+    <div style="margin-top:8px">
+      <span class="pill">SOP / work instruction (Word, PDF)</span>
+      <span class="pill">Meeting transcript or notes</span>
+      <span class="pill">Photo or image of a diagram</span>
+      <span class="pill">Process spreadsheet</span>
+      <span class="pill">Visio drawing</span>
+      <span class="pill">Existing BPMN / XML</span>
+    </div>
+  </div>
+
+  <div style="margin-top:20px">
+    <div class="eyebrow" style="color:#7fb0ff">What it returns</div>
+    <div style="margin-top:8px">
+      <span class="pill">BPMN 2.0 XML + rendered diagram</span>
+      <span class="pill">Process discovery workbook</span>
+      <span class="pill">Conformance audit</span>
+      <span class="pill">The questions to ask the business</span>
+    </div>
+  </div>
+
+  <div class="flowstrip">
+    <div class="fs"><div class="fsk">1</div><div class="fst">Upload</div>
+      <div class="fsd">SOP, transcript, image, spreadsheet or Visio</div></div>
+    <div class="fsarrow">→</div>
+    <div class="fs"><div class="fsk">2</div><div class="fst">The AI reads it</div>
+      <div class="fsd">words and embedded diagrams, together</div></div>
+    <div class="fsarrow">→</div>
+    <div class="fs hi"><div class="fsk">3</div><div class="fst">A human approves</div>
+      <div class="fsd">the understanding — before anything is drawn</div></div>
+    <div class="fsarrow">→</div>
+    <div class="fs"><div class="fsk">4</div><div class="fst">BPMN 2.0 out</div>
+      <div class="fsd">built, laid out and audited</div></div>
+  </div>
+
+  <div class="who">
+    <div>
+      <div class="eyebrow" style="color:#7fb0ff;margin-bottom:8px">Who it is for</div>
+      <p style="color:#dce7ff;margin:0;font-size:10pt;line-height:1.55">
+        Transformation and consulting teams who must map a client's processes before they can improve them;
+        automation teams who need a reliable "as-is" before designing the "to-be"; and risk and controls teams
+        who need the documented process and the modelled one to be the same thing.</p>
+    </div>
+    <div class="who-num">
+      <div style="font-size:30pt;font-weight:800;letter-spacing:-1.5px;line-height:1">$1.14<span style="font-size:16pt">M</span></div>
+      <div class="tiny" style="color:#b9cdf5;margin-top:4px">illustrative annual delivery cost released<br>at 25 engagements a year — see page 5</div>
+    </div>
+  </div>
+
+  <div class="foot" style="border-color:rgba(255,255,255,.2);color:#9db6e8">
+    <span>DiagramIQ — AI-powered BPMN 2.0 diagram intelligence · built on AWS Bedrock</span><span>Page 1 of 5</span>
+  </div>
+</section>
+
+<!-- ─────────────── 2. THE PROBLEM ─────────────── -->
+<section class="page">
+  <div class="sec-head"><span class="sec-num">01</span><div><h2>The problem, in plain terms</h2>
+    <p class="muted small" style="margin:0">Everybody has the knowledge written down. Almost nobody has it modelled.</p></div></div>
+
+  <p class="lede" style="font-size:11.5pt">A client's process already exists on paper — in an SOP, a policy, a
+  training deck, a recorded workshop. Turning that into a process map that a consultant, an automation team or an
+  auditor can actually use is done <strong>by hand, one box at a time</strong>. It is slow, it is expensive, and
+  the person doing it is a scarce specialist.</p>
+
+  <h3 style="margin-top:14px">Where six hours per process actually goes</h3>
+  <div class="bars">
+    <div class="bar-row"><span>Reading and understanding the source</span>
+      <span class="track"><span class="fill" style="width:20%"></span></span><span class="val">1.2 h</span></div>
+    <div class="bar-row"><span>Drafting the steps, roles and systems</span>
+      <span class="track"><span class="fill" style="width:25%"></span></span><span class="val">1.5 h</span></div>
+    <div class="bar-row"><span>Drawing the BPMN — lanes, gateways, layout</span>
+      <span class="track"><span class="fill" style="width:33%"></span></span><span class="val">2.0 h</span></div>
+    <div class="bar-row"><span>Fixing naming and modelling conventions</span>
+      <span class="track"><span class="fill" style="width:13%"></span></span><span class="val">0.8 h</span></div>
+    <div class="bar-row"><span>Review rework after the first pass</span>
+      <span class="track"><span class="fill" style="width:9%"></span></span><span class="val">0.5 h</span></div>
+    <div class="bar-row" style="font-weight:800"><span>Total, per single process</span>
+      <span class="track"><span class="fill warm" style="width:100%"></span></span><span class="val">6.0 h</span></div>
+  </div>
+
+  <div class="callout"><p><strong>Multiply it.</strong> A mid-sized transformation maps <strong>250 processes</strong>.
+  That is <strong>1,500 analyst hours</strong> — roughly <strong>9 months of one person's working year</strong> —
+  spent drawing boxes rather than improving the process inside them.</p></div>
+
+  <h3 style="margin-top:16px">And the tools that exist do not close the gap</h3>
+  <div class="grid2" style="margin-top:8px">
+    <div class="card"><h3>Modelling editors</h3>
+      <p><span class="muted">Visio, Camunda Modeler, Signavio.</span> Excellent drawing surfaces — but they read
+      nothing. Every box is still placed by a human who has already read the document.</p></div>
+    <div class="card"><h3>Process mining</h3>
+      <p><span class="muted">Celonis, ABBYY, UiPath.</span> Needs an event log from a transactional system.
+      A process that only exists in a document or in someone's head produces no log at all.</p></div>
+    <div class="card"><h3>Diagram / OCR converters</h3>
+      <p>Recover shapes and text from a picture. A rectangle becomes a rectangle — not a task, owned by a role,
+      conditional on a threshold. The meaning is left behind.</p></div>
+    <div class="card"><h3>A chat AI, used directly</h3>
+      <p>Produces XML that may not open, carries no layout, and gives the reviewer no way to see what it
+      understood before accepting it — or to fix one step without regenerating everything.</p></div>
+  </div>
+
+  <h3 style="margin-top:16px">What that costs, at the scale it is actually done</h3>
+  <div class="stats" style="grid-template-columns:repeat(3,1fr);margin-top:8px">
+    <div class="stat" style="border:1px solid var(--line)">
+      <div class="n">1,500<span> h</span></div>
+      <div class="l">of specialist time per engagement,<br>at 250 processes</div></div>
+    <div class="stat" style="border:1px solid var(--line)">
+      <div class="n" style="color:var(--accent)">$57,000</div>
+      <div class="l">delivery cost per engagement,<br>at $38 per hour blended</div></div>
+    <div class="stat" style="border:1px solid var(--line)">
+      <div class="n" style="color:var(--accent)">$1.43<span> M</span></div>
+      <div class="l">a year across 25 engagements —<br>spent drawing, not advising</div></div>
+  </div>
+
+  <div class="foot"><span>DiagramIQ — the problem</span><span>Page 2 of 5</span></div>
+</section>
+
+<!-- ─────────────── 3. THE SOLUTION ─────────────── -->
+<section class="page">
+  <div class="sec-head"><span class="sec-num">02</span><div><h2>The solution — how it works</h2>
+    <p class="muted small" style="margin:0">Four steps. The third one is the reason it can be trusted.</p></div></div>
+
+  <div class="steps">
+    <div class="step"><div class="k">1</div><h3>Take it in</h3>
+      <p>Upload the SOP, transcript, image, spreadsheet or Visio file. Nothing is retyped. Inside a Word document
+      it keeps the headings, the numbered clauses, the tables as tables, and any flowchart pasted into the page.</p></div>
+    <div class="step"><div class="k">2</div><h3>Read it</h3>
+      <p>The AI reads the words and the pictures <em>together</em>, so a diagram drawn on page 4 settles the
+      branching that the text left vague. It comes back with steps, roles, systems, documents and decision rules.</p></div>
+    <div class="step hi"><div class="k">3</div><h3>Show its working</h3>
+      <p><strong>A human checks what it understood — before any diagram is drawn.</strong> Steps appear in an
+      editable table. Correct a role, add a step, fix a threshold. Nothing is drawn until you approve.</p></div>
+    <div class="step"><div class="k">4</div><h3>Build and audit</h3>
+      <p>The approved understanding becomes real BPMN 2.0 — pools, lanes, gateways, proper layout — then it is
+      audited against the modelling rulebook and handed back with the gaps listed.</p></div>
+  </div>
+
+  <div class="callout"><p><strong>Why step 3 changes everything.</strong> Every other AI tool asks you to check
+  its <em>output</em> — a finished diagram, where an error is expensive to find and expensive to fix. DiagramIQ
+  asks you to check its <em>understanding</em>, in a table, in thirty seconds, before a single box exists.
+  Corrections cost one keystroke instead of one re-draw.</p></div>
+
+  <h3 style="margin-top:14px">What you get back, every time</h3>
+  <div class="grid2" style="margin-top:8px">
+    <div class="card"><h3>A diagram that actually opens</h3>
+      <p>BPMN 2.0 with full layout information — it lands in Signavio, Camunda or bpmn.io ready to work on,
+      not as a picture to be redrawn.</p></div>
+    <div class="card"><h3>A conformance audit</h3>
+      <p>Checked against the structural rules and the house modelling conventions, with each finding named and
+      graded rather than a bare pass or fail.</p></div>
+    <div class="card"><h3>The questions to ask the business</h3>
+      <p>Where the source never said who approves above a limit, it says so — and gives you the question to put
+      to the client, instead of quietly inventing an answer.</p></div>
+    <div class="card"><h3>An honest label on the result</h3>
+      <p>If it could only manage a partial reading, it says which parts are missing. It never hands back a
+      lesser result dressed as a complete one.</p></div>
+  </div>
+
+  <h3 style="margin-top:14px">And it keeps working with you</h3>
+  <p class="small" style="color:var(--ink2)">Describe a correction in ordinary English — <em>"Approve request
+  belongs to Finance, not Procurement"</em> — and it applies it, then tells you exactly what it changed and what
+  it did not. If a revision makes things worse, <strong>roll back</strong> to the previous version. Export the
+  steps to Excel, edit them in the tool everyone already has, and re-import: the edits <strong>patch</strong> the
+  existing diagram instead of duplicating it.</p>
+
+  <h3 style="margin-top:16px">A worked example — one real SOP, start to finish</h3>
+  <div class="example">
+    <div class="ex"><div class="exn">8</div><div class="exl">sections of clause text,<br>read in document order</div></div>
+    <div class="exarrow">+</div>
+    <div class="ex"><div class="exn">5</div><div class="exl">tables read as tables,<br>not as loose text</div></div>
+    <div class="exarrow">+</div>
+    <div class="ex"><div class="exn">1</div><div class="exl">flowchart inside the<br>document, read as an image</div></div>
+    <div class="exarrow">→</div>
+    <div class="ex hi"><div class="exn">8</div><div class="exl">steps put up for<br>human approval</div></div>
+    <div class="exarrow">→</div>
+    <div class="ex"><div class="exn">5</div><div class="exl">swimlanes in the<br>finished BPMN</div></div>
+  </div>
+  <p class="tiny muted" style="margin-top:6px">Reference sections — purpose, scope, definitions, revision history —
+  were correctly left out of the process. The approval thresholds written into the clause text were carried into
+  the diagram as decision criteria.</p>
+
+  <div class="foot"><span>DiagramIQ — the solution</span><span>Page 3 of 5</span></div>
+</section>
+
+<!-- ─────────────── 4. USP ─────────────── -->
+<section class="page">
+  <div class="sec-head"><span class="sec-num">03</span><div><h2>What makes it different in the market</h2>
+    <p class="muted small" style="margin:0">Three things no competing category does together.</p></div></div>
+
+  <table style="margin-bottom:16px">
+    <thead><tr>
+      <th style="width:34%">Capability</th>
+      <th style="text-align:center">Modelling<br>editors</th>
+      <th style="text-align:center">Process<br>mining</th>
+      <th style="text-align:center">OCR / diagram<br>converters</th>
+      <th style="text-align:center">General<br>chat AI</th>
+      <th style="text-align:center;background:#e7edfb;color:var(--brand)">DiagramIQ</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>Works with no event log / no system data</td>
+        <td align="center"><span class="tick">✓</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="tick">✓</span></td><td align="center"><span class="tick">✓</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Reads a document and extracts the process</td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="part">part</span></td><td align="center"><span class="part">part</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Reads text <em>and</em> the diagram inside it, together</td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Human approves the interpretation before drawing</td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Guaranteed valid BPMN 2.0 with layout</td>
+        <td align="center"><span class="tick">✓</span></td><td align="center"><span class="part">part</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Audits itself against modelling conventions</td>
+        <td align="center"><span class="part">part</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Says what it could not read, and what to ask</td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+      <tr><td>Edits round-trip through Excel without duplicating</td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center"><span class="cross">✕</span></td><td align="center"><span class="cross">✕</span></td>
+        <td align="center" style="background:#f5f8ff"><span class="tick">✓</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="grid3">
+    <div class="card" style="background:#eef3ff;border-color:#c9d8fb">
+      <div class="big">USP 1</div><h3>It reads the picture and the paragraph as one</h3>
+      <p>An SOP explains a rule in words on page 2 and draws it on page 4. Every other tool sees one or the other.
+      DiagramIQ sends both to the model together, positioned where they sat in the document.</p></div>
+    <div class="card" style="background:#fff6ef;border-color:#fbd9bd">
+      <div class="big">USP 2</div><h3>The human signs off the understanding, not the drawing</h3>
+      <p>Verification happens on a table of steps, before generation. And the diagram itself is built by fixed
+      rules — so the AI's judgement is reviewed, and the AI never gets to write invalid XML.</p></div>
+    <div class="card" style="background:#eefaf7;border-color:#bde8de">
+      <div class="big">USP 3</div><h3>It is honest about what it does not know</h3>
+      <p>Missing thresholds become questions for the business, not invented answers. A partial reading is
+      labelled as partial. That is what makes the output safe to put in front of a client.</p></div>
+  </div>
+
+  <h3 style="margin-top:18px">How to prove it on a live account — a 3-week pilot</h3>
+  <table>
+    <thead><tr><th style="width:14%">Week</th><th>What happens</th><th class="n" style="width:26%">What it produces</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Week 1</strong></td>
+        <td>Pick <strong>20 processes</strong> already documented on the account. Time how long two of them take
+            to model by hand today — that is the baseline, measured rather than assumed.</td>
+        <td class="n">A real baseline<br>in hours</td></tr>
+      <tr><td><strong>Week 2</strong></td>
+        <td>Run all 20 through DiagramIQ. Each one is reviewed and approved by the same analysts who would have
+            drawn it. Record the actual review time per process.</td>
+        <td class="n">20 diagrams +<br>20 timings</td></tr>
+      <tr><td><strong>Week 3</strong></td>
+        <td>Compare quality against the hand-drawn versions, count the audit findings and the questions raised
+            for the business, and recompute page 5 with the measured numbers.</td>
+        <td class="n">A defensible<br>business case</td></tr>
+    </tbody>
+  </table>
+  <p class="tiny muted" style="margin-top:8px">Twenty processes is enough to move the model on page 5 from
+  illustrative to measured, and small enough to run inside an existing engagement without a funding decision.</p>
+
+  <div class="foot"><span>DiagramIQ — market differentiation</span><span>Page 4 of 5</span></div>
+</section>
+
+<!-- ─────────────── 5. NUMBERS ─────────────── -->
+<section class="page">
+  <div class="sec-head"><span class="sec-num">04</span><div><h2>The numbers — effort, cost and revenue</h2>
+    <p class="muted small" style="margin:0">Every figure below is computed from the four assumptions in the box. Change them and the model moves with you.</p></div></div>
+
+  <div class="note" style="margin-top:0;margin-bottom:14px">
+    <strong class="small">Assumptions used</strong>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:7px">
+      <div><div style="font-size:15pt;font-weight:800;color:var(--brand)">6.0 h</div><div class="tiny muted">manual effort per process map</div></div>
+      <div><div style="font-size:15pt;font-weight:800;color:var(--brand)">1.2 h</div><div class="tiny muted">with DiagramIQ, incl. review</div></div>
+      <div><div style="font-size:15pt;font-weight:800;color:var(--brand)">250</div><div class="tiny muted">processes in a typical engagement</div></div>
+      <div><div style="font-size:15pt;font-weight:800;color:var(--brand)">$38</div><div class="tiny muted">blended delivery cost per hour</div></div>
+    </div>
+  </div>
+
+  <h3>Effort and cost released</h3>
+  <table style="margin-bottom:14px">
+    <thead><tr><th>Scope</th><th class="n">Manual</th><th class="n">With DiagramIQ</th><th class="n">Hours saved</th><th class="n">Cost released</th></tr></thead>
+    <tbody>
+      <tr><td>Per single process</td><td class="n">6.0 h</td><td class="n">1.2 h</td><td class="n">4.8 h</td><td class="n">$182</td></tr>
+      <tr><td>Per 100 processes</td><td class="n">600 h</td><td class="n">120 h</td><td class="n">480 h</td><td class="n">$18,240</td></tr>
+      <tr><td>Per engagement (250 processes)</td><td class="n">1,500 h</td><td class="n">300 h</td><td class="n">1,200 h</td><td class="n">$45,600</td></tr>
+      <tr class="total"><td>Across 25 engagements a year</td><td class="n">37,500 h</td><td class="n">7,500 h</td><td class="n">30,000 h</td><td class="n">$1.14 M</td></tr>
+    </tbody>
+  </table>
+
+  <div class="grid3" style="margin-bottom:14px">
+    <div class="stat" style="background:#eef3ff;border:1px solid #c9d8fb">
+      <div class="n">30,000<span> h</span></div><div class="l">analyst capacity released each year —<br>about <strong>16 FTEs</strong> redeployed to billable work</div></div>
+    <div class="stat" style="background:#fff6ef;border:1px solid #fbd9bd">
+      <div class="n" style="color:var(--accent)">$1.14<span> M</span></div><div class="l">annual delivery cost taken out<br>at 25 engagements per year</div></div>
+    <div class="stat" style="background:#eefaf7;border:1px solid #bde8de">
+      <div class="n" style="color:var(--teal)">8 <span>→</span> 2.5</div><div class="l">weeks to complete discovery and modelling —<br>a <strong>69% shorter</strong> phase</div></div>
+  </div>
+
+  <h3>How that becomes revenue and margin for Genpact</h3>
+  <table style="margin-bottom:12px">
+    <thead><tr><th style="width:26%">Lever</th><th>What changes</th><th class="n" style="width:22%">Illustrative value</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Margin on fixed-price work</strong></td>
+        <td>The saving lands straight in delivery cost. On a $400k engagement carrying $260k of delivery cost,
+            removing $45.6k lifts gross margin from 35% to <strong>46%</strong>.</td>
+        <td class="n">+11 pts</td></tr>
+      <tr><td><strong>Capacity redeployed</strong></td>
+        <td>30,000 hours of scarce BA time moved off box-drawing and onto advisory and automation design —
+            billable work that does not need new hiring.</td>
+        <td class="n">≈ 16 FTEs</td></tr>
+      <tr><td><strong>Faster time to value</strong></td>
+        <td>Discovery closes 5.5 weeks earlier, so the automation and re-engineering phase — the larger,
+            higher-margin scope — starts and bills sooner.</td>
+        <td class="n">−69% cycle</td></tr>
+      <tr><td><strong>Win rate and pricing</strong></td>
+        <td>Bid a discovery phase at a price a manual competitor cannot match, while keeping the margin,
+            because the cost base is genuinely lower.</td>
+        <td class="n">Competitive edge</td></tr>
+      <tr><td><strong>A productised offering</strong></td>
+        <td>"Process discovery as a service" — the same accelerator resold across accounts, with the marginal
+            cost of one more process close to zero.</td>
+        <td class="n">New revenue line</td></tr>
+      <tr class="total"><td>Combined effect</td>
+        <td>Lower cost to serve, more billable capacity, shorter path to the bigger scope.</td>
+        <td class="n">$1.14 M + upside</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout"><p><strong>The compounding one.</strong> The output is not a picture — it is structured,
+  machine-readable process data. Once a client's 250 processes exist in that form, every later engagement
+  (automation scoping, controls testing, target-operating-model design) starts from an asset instead of a
+  blank page.</p></div>
+
+  <div class="note">
+    <p class="tiny" style="margin:0"><strong>Basis of these figures.</strong> The effort and cost numbers are an
+    illustrative model computed from the four assumptions shown above, not measured client outcomes. The 80%
+    effort reduction reflects the design target for the accelerator. Replace the four assumptions with actuals
+    from a live engagement and every figure on this page recalculates from them. Margin, capacity and cycle-time
+    figures are worked examples on stated inputs, offered to size the opportunity — not a forecast or a
+    commitment.</p>
+  </div>
+
+  <div class="foot"><span>DiagramIQ — commercial case</span><span>Page 5 of 5</span></div>
+</section>
+
+</body></html>
