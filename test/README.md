@@ -54,8 +54,8 @@ python3 test/auth.py
 
 ## Celonis
 
-`celonis.ts` and `celonis-auth.ts` (run with `npm run test:celonis`) exercise
-the Celonis path end-to-end with no Celonis tenant and no AWS account. The
+`celonis.ts`, `celonis-km.ts` and `celonis-auth.ts` (run with
+`npm run test:celonis`) exercise the Celonis path end-to-end with no Celonis tenant and no AWS account. The
 handler, the MCP client, the OAuth flow, the tool-use loop and the audit write
 are the real ones; what is faked is the tenant on the far side of the socket
 and the two AWS services, reached through the SDK's own endpoint environment
@@ -76,6 +76,23 @@ The checks that matter most:
   activities or the reviewer's question;
 - with `REQUIRE_AUTH=true`, both routes refuse before Celonis is touched at all
   — including an unsigned token with well-formed admin claims.
+
+`celonis-km.ts` covers the second door, the Knowledge Model REST API wrapped as
+the same four tools. Its stub tenant serves `/oauth2/token`, the MCP asset and
+`/intelligence/api/knowledge-models/{km}/…` from one server, so a test can prove
+which door a given configuration took. The checks that matter most:
+
+- the four tools translate into the calls the API documents — a column with a
+  dot goes in `fields=`, one without goes in `kpis=`;
+- `get_knowledge_model` returns records **with** their attributes, without which
+  the model cannot form `RECORD.field` and the run dies three calls later for no
+  visible reason;
+- the API's published limits are clamped and refused with a reason, not
+  discovered by being rejected;
+- the Knowledge Model token is minted with its own scope, not the MCP one;
+- a **configured MCP asset that fails does not silently fall through** to the
+  REST API, because the two see different things;
+- a missing or wrong knowledge model id names the parameter or the id.
 
 Each one was confirmed to fail when the thing it guards was deliberately
 broken. The browser half is in `e2e.mjs`, against mocks mounted under their own

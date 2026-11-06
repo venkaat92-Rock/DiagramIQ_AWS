@@ -11,7 +11,7 @@
     "test:cors": "node test/cors-parity.mjs",
     "test:routes": "python3 test/route_split.py",
     "test:auth": "python3 test/auth.py",
-    "test:celonis": "tsx test/celonis.ts && tsx test/celonis-auth.ts"
+    "test:celonis": "tsx test/celonis.ts && tsx test/celonis-km.ts && tsx test/celonis-auth.ts"
   },
   "devDependencies": {
     "@aws-amplify/backend": "^1.16.1",
