@@ -100,10 +100,39 @@ function runTool(name: string, args: Record<string, unknown>): string {
 
 /* ---------- the fake tenant: OAuth + MCP ----------------------------------- */
 
+export const KM_ID = 'dm_ap_agent_spike-km';
+
+/** What the Knowledge Model holds: the KPIs and the one record, with the
+ *  attributes a process definition needs. Deliberately not a tidy subset —
+ *  a real knowledge model carries plenty the diagram does not want. */
+const KM_KPIS = [
+  { id: 'ap_invoice_count', displayName: 'Invoice count',
+    description: 'Number of invoices.' },
+  { id: 'ap_touchless_rate', displayName: 'Touchless rate',
+    description: 'Share processed without manual touch.' },
+  { id: 'ap_rework_rate', displayName: 'Rework rate', description: 'Share reworked.' },
+];
+
+const KM_ATTRS = [
+  { id: 'activity', displayName: 'Activity',
+    description: 'The activity recorded in the event log.' },
+  { id: 'activity_index', displayName: 'Activity index',
+    description: 'Position of the activity within the case.' },
+  { id: 'resource', displayName: 'Resource',
+    description: 'Who or what performed the activity.' },
+  { id: 'vendor_name', displayName: 'Vendor name', description: 'Supplier.' },
+  { id: 'channel', displayName: 'Channel', description: 'How the invoice arrived.' },
+];
+
 export type Tenant = {
   teamUrl: string;
   mcpUrl: string;
+  kmBaseUrl: string;
+  kmId: string;
   tokenRequests: { auth: string; form: Record<string, string> }[];
+  /** Every Knowledge Model request the tenant served, for checking that the
+   *  four tools translate into the calls the API documents. */
+  kmRequests: string[];
   close: () => Promise<void>;
 };
 
@@ -112,6 +141,7 @@ export type Tenant = {
  *  getToken() exists for exactly this and is otherwise never exercised. */
 export async function startTenant(opts: { rejectPost?: boolean } = {}): Promise<Tenant> {
   const tokenRequests: Tenant['tokenRequests'] = [];
+  const kmRequests: string[] = [];
 
   const server = createServer(async (req, res) => {
     const url = req.url ?? '/';
@@ -137,9 +167,66 @@ export async function startTenant(opts: { rejectPost?: boolean } = {}): Promise<
         res.end(JSON.stringify({ error: 'invalid_client' }));
         return;
       }
+      const forKm = String(form.scope || '').includes('knowledge-models');
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ access_token: 'tenant-token', expires_in: 3600 }));
+      res.end(JSON.stringify({
+        access_token: forKm ? 'km-token' : 'tenant-token', expires_in: 3600,
+      }));
       return;
+    }
+
+    if (url.startsWith('/intelligence/api/')) {
+      kmRequests.push(url);
+      const json = (code: number, body: unknown) => {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      };
+      // The Knowledge Model API wants its own scope; a token minted for the
+      // MCP asset is refused, exactly as the real one refuses it.
+      if (req.headers.authorization !== 'Bearer km-token') {
+        return json(401, { error: 'invalid_token' });
+      }
+      const u = new URL(url, 'http://x');
+      const parts = u.pathname.split('/').filter(Boolean);
+      // intelligence api knowledge-models {km} ...
+      if (parts[2] !== 'knowledge-models' || parts[3] !== KM_ID) {
+        return json(404, { error: `unknown knowledge model '${parts[3]}'` });
+      }
+      const tail = parts.slice(4);
+      if (tail[0] === 'kpis') return json(200, { kpis: KM_KPIS });
+      if (tail[0] === 'records' && tail.length === 1) {
+        return json(200, { records: [{ id: 'AP_INVOICE', displayName: 'AP Invoice' }] });
+      }
+      if (tail[0] === 'records' && tail[1] === 'AP_INVOICE') {
+        return json(200, { id: 'AP_INVOICE', attributes: KM_ATTRS });
+      }
+      if (tail[0] === 'records') return json(404, { error: `no record '${tail[1]}'` });
+      if (tail[0] === 'data') {
+        const kpis = (u.searchParams.get('kpis') || '').split(',').filter(Boolean);
+        const fields = (u.searchParams.get('fields') || '').split(',').filter(Boolean);
+        const limit = Number(u.searchParams.get('limit') || 50);
+        const unknown = [...kpis.filter((k) => !KM_KPIS.some((x) => x.id === k)),
+                         ...fields.filter((f) => !KM_ATTRS.some(
+                           (a) => f === `AP_INVOICE.${a.id}`))];
+        if (unknown.length) {
+          return json(400, { error: `unknown column(s): ${unknown.join(', ')}` });
+        }
+        const rows = ACTIVITIES.map((a, i) => {
+          const row: Record<string, unknown> = {};
+          for (const f of fields) {
+            const key = f.split('.')[1];
+            row[f] = key === 'activity' ? a.activity
+                   : key === 'activity_index' ? i
+                   : key === 'resource' ? a.resource
+                   : key === 'channel' ? (i % 2 ? 'EDI' : 'PDF')
+                   : `${a.activity} vendor`;
+          }
+          for (const k of kpis) row[k] = k === 'ap_invoice_count' ? a.cases : 0.5;
+          return row;
+        }).slice(0, limit);
+        return json(200, { rows });
+      }
+      return json(404, { error: 'no such endpoint' });
     }
 
     if (url.startsWith('/mcp')) {
@@ -176,10 +263,14 @@ export async function startTenant(opts: { rejectPost?: boolean } = {}): Promise<
   });
 
   const port = await listen(server);
+  const origin = `http://127.0.0.1:${port}`;
   return {
-    teamUrl: `http://127.0.0.1:${port}`,
-    mcpUrl: `http://127.0.0.1:${port}/mcp`,
+    teamUrl: origin,
+    mcpUrl: `${origin}/mcp`,
+    kmBaseUrl: `${origin}/intelligence/api`,
+    kmId: KM_ID,
     tokenRequests,
+    kmRequests,
     close: () => close(server),
   };
 }
