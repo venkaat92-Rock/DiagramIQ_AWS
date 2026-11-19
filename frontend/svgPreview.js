@@ -47,8 +47,23 @@ export function renderSvg(layout) {
     const p3 = [x2 - 9 * Math.cos(a + 0.45), y2 - 9 * Math.sin(a + 0.45)];
     parts.push(`<polygon points="${x2},${y2} ${p2[0].toFixed(1)},${p2[1].toFixed(1)} ${p3[0].toFixed(1)},${p3[1].toFixed(1)}" fill="#33475b"/>`);
     if (e.label) {
-      const [mx, my] = e.points[Math.floor(e.points.length / 2) - 1];
-      parts.push(`<text x="${mx + 6}" y="${my - 6}" font-size="10" fill="#b0342a">${esc(e.label)}</text>`);
+      // Branches fanning out of one gateway share their trunk, so anchoring
+      // near the source stacks every branch label on the same pixel. A branch
+      // that steps to another row is labelled on the row it lands on, just
+      // before it turns in; a straight run is labelled above the line, pulled
+      // back towards the source so a long run keeps its label by the decision.
+      const pts = e.points, n = pts.length;
+      let tx, ty, anchor;
+      if (n === 2) {
+        const [ax, ay] = pts[0], [bx, by] = pts[1];
+        const len = Math.abs(bx - ax) + Math.abs(by - ay) || 1;
+        const t = len > 150 ? Math.min(0.5, 60 / len) : 0.5;
+        tx = ax + (bx - ax) * t; ty = ay + (by - ay) * t - 6; anchor = 'middle';
+      } else {
+        const [lx, ly] = pts[n - 2];
+        tx = lx - 6; ty = ly - 6; anchor = 'end';
+      }
+      parts.push(`<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" font-size="10" fill="#b0342a" text-anchor="${anchor}">${esc(e.label)}</text>`);
     }
   }
 
