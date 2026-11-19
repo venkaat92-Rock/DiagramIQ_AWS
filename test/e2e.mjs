@@ -131,6 +131,8 @@ const MOCK = {
   '/celonisfn/celonis/status': {
     connected: true,
     team: 'https://acme.eu-1.celonis.cloud',
+    source: 'km',
+    sourceLabel: 'Knowledge Model dm_ap_invoices-km',
     tools: [
       { name: 'list_data_models', description: 'List the data models published to this team.' },
       { name: 'get_activities', description: 'Activity names with case counts.' },
@@ -140,6 +142,8 @@ const MOCK = {
   },
   '/celonisfn/celonis/discover': {
     discovery: MINED,
+    source: 'km',
+    sourceLabel: 'Knowledge Model dm_ap_invoices-km',
     notes: ['Dropped the variant tail below 2% of cases.',
             'Two data models matched; read AP_Invoices_EU.'],
     toolCalls: [
@@ -1150,6 +1154,12 @@ ok('and the tool withheld as not read-only is named',
 ok('the tenant it connected to is named',
    /acme\.eu-1\.celonis\.cloud/.test(await page.textContent('#celonisMsg')),
    await page.textContent('#celonisMsg'));
+// A tenant can be read through its Agent Tools asset or through its Knowledge
+// Model API; the two do not see the same things, so which one answered is part
+// of the answer.
+ok('which door it read through is named',
+   /Knowledge Model dm_ap_invoices-km/.test(await page.textContent('#celonisTools')),
+   (await page.textContent('#celonisTools')).slice(0, 120));
 
 // A run with nothing asked must not reach the backend.
 const celonisCallsBefore = (calls['/celonisfn/celonis/discover'] || []).length;
@@ -1215,6 +1225,9 @@ ok('a loop the event log shows is named, not quietly dropped',
 ok('the grid shows which Celonis tools were read',
    await page.isVisible('#revNotes')
    && /get_activities/.test(await page.textContent('#revNotes')));
+ok('and which source they were read from',
+   /Knowledge Model dm_ap_invoices-km/.test(await page.textContent('#revNotes')),
+   (await page.textContent('#revNotes')).slice(0, 120));
 ok("the model's judgement calls are shown next to the approval",
    /variant tail/.test(await page.textContent('#revNotes')));
 ok('a tool call that failed is not hidden from the reviewer',

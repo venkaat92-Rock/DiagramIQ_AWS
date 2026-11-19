@@ -127,17 +127,51 @@ builder.
 
 ### How it talks to Celonis
 
-Through the tenant's own **MCP server** — the endpoint Celonis publishes for an
-*Agent Tools* asset — not a bespoke API integration:
+There are two doors into a tenant, and which one a customer has is not our
+choice. DiagramIQ reads through either, behind one interface, so the prompt and
+the review grid never know which it got:
+
+| Door | What it is | When it applies |
+|---|---|---|
+| **MCP** | The **Agent Tools** asset published from Celonis Studio | Someone has published one, with read tools on it |
+| **KM** | The **Knowledge Model REST API** | Always, if the tenant has a Knowledge Model — no Studio work needed |
+
+The second one matters more than it sounds. A tenant has a Knowledge Model long
+before anybody publishes an Agent Tools asset from it, and publishing one needs
+a person with Studio permissions. Without the KM door, those tenants would be
+told "not connected" while their process knowledge sat right there.
 
 ```
 Browser  →  Lambda "diagramiq-celonis"
               │  1. OAuth2 client_credentials  →  {team}/oauth2/token
-              │  2. MCP initialize + list_tools  →  what this tenant published
+              │     (the two doors need different scopes; it mints the right one)
+              │  2a. MCP: initialize + list_tools  →  what this tenant published
+              │  2b. KM:  the same four tools, over the REST API
               │  3. Bedrock Converse, with those tools, until it has the process
               ▼
             discovery definition  →  review grid  →  Approve  →  BPMN
 ```
+
+Over the KM door the four tools are the ones a published Agent Tools asset
+offers by default, so the model speaks one vocabulary either way:
+
+| Tool | Over the REST API |
+|---|---|
+| `get_knowledge_model()` | `GET /knowledge-models/{km}/kpis` + `/records` + each record's attributes |
+| `search_metadata(query)` | matches that model's KPI ids, names and descriptions |
+| `load_data(columns, …)` | `GET /knowledge-models/{km}/data?kpis=…&fields=…` — a column with a dot is `RECORD.field`, one without is a KPI id |
+| `search_data(query, attribute)` | distinct values of one attribute, filtered |
+
+Celonis publishes limits on that API — 50 rows a page, 5,000 in all, 20
+requests a second. DiagramIQ clamps the page size and paces its calls rather
+than discovering the limits by being refused, and a request beyond the total
+ceiling comes back with the reason instead of a bare 400.
+
+**It never falls back silently.** If the MCP asset is configured and fails to
+open, that is an error, not a cue to read the REST API instead — the two see
+different things (an asset is a curated tool set; the API is everything), so
+swapping them would change the answer and hide the reason the asset failed,
+usually an unpublished package or a missing "use" permission.
 
 Two things about this are deliberate:
 
@@ -153,36 +187,63 @@ Two things about this are deliberate:
 
 ### What to set, and where
 
-In Celonis you need an **application key** (or an OAuth client) with the
-`mcp-asset.tools:execute` scope, and the **MCP Server URL** that Celonis Studio
-shows when the Agent Tools asset is published.
+In Celonis you need an **application key** (or an OAuth client), and then
+whichever of the two doors your tenant has.
 
-In AWS, those go in Parameter Store — not in the stack, and not in an Amplify
+Everything goes in Parameter Store — not in the stack, and not in an Amplify
 secret. The stack reads them at runtime, so a deployment of DiagramIQ never
-depends on a Celonis credential existing, and rotating one needs no redeploy:
+depends on a Celonis credential existing, and rotating one needs no redeploy.
+
+**Always:**
 
 ```bash
 REGION=us-west-2
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/team_url \
-  --type String --overwrite --value "https://<team>.<realm>.celonis.cloud"
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/mcp_url \
-  --type String --overwrite --value "https://<team>.<realm>.celonis.cloud/.../mcp"
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/client_id \
-  --type String --overwrite --value "<application key id>"
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/client_secret \
-  --type SecureString --overwrite --value "<application key secret>"
+P="aws ssm put-parameter --region $REGION --overwrite"
+$P --name /diagramiq/celonis/team_url --type String \
+   --value "https://<team>.<realm>.celonis.cloud"
+$P --name /diagramiq/celonis/client_id --type String \
+   --value "<application key id>"
+$P --name /diagramiq/celonis/client_secret --type SecureString \
+   --value "<application key secret>"
 ```
+
+**For the MCP door** — the OAuth client needs the `mcp-asset.tools:execute`
+scope *and* "use" permission on the asset's package, and the package has to be
+published:
+
+```bash
+$P --name /diagramiq/celonis/mcp_url --type String \
+   --value "<the MCP Server URL Studio shows for the published Agent Tools asset>"
+```
+
+**For the Knowledge Model door** — the OAuth client needs the
+`intelligence.knowledge-models:read` scope:
+
+```bash
+$P --name /diagramiq/celonis/km_id --type String \
+   --value "<workspace>.<knowledge model key>-km"
+```
+
+Set both and it uses the MCP asset; set either one on its own and it uses that.
 
 Optional:
 
 ```bash
-# Only if your tenant uses a different scope.
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/scope \
-  --type String --overwrite --value "mcp-asset.tools:execute"
+# mcp | km | auto. Default auto: it takes the Agent Tools asset where one is
+# configured, because an asset is curated by someone who knows the tenant.
+$P --name /diagramiq/celonis/source --type String --value "auto"
+# Only if the Knowledge Model API is not at {team_url}/intelligence/api.
+$P --name /diagramiq/celonis/km_base_url --type String \
+   --value "https://<team>.<realm>.celonis.cloud/intelligence/api"
+# Only if your tenant uses different scopes.
+$P --name /diagramiq/celonis/scope --type String \
+   --value "mcp-asset.tools:execute"
+$P --name /diagramiq/celonis/km_scope --type String \
+   --value "intelligence.knowledge-models:read"
 # Widen or narrow the read-only guard. Comma-separated; matched as substrings
 # of the tool name, case-insensitively.
-aws ssm put-parameter --region $REGION --name /diagramiq/celonis/blocked_tool_words \
-  --type String --overwrite --value "trigger,action,orchestration,resume,execute,write,create,update,delete,publish"
+$P --name /diagramiq/celonis/blocked_tool_words --type String \
+   --value "trigger,action,orchestration,resume,execute,write,create,update,delete,publish"
 ```
 
 Until those exist, the panel says so and names the parameters it is missing —
@@ -196,9 +257,9 @@ account would be a credential-harvesting tool waiting for a prompt injection.
 ### Using it
 
 1. ⛏ **Celonis (mining)** → **Check connection**. This does the handshake and
-   nothing else: it lists the read-only tools your tenant published and names
-   any it withheld. If the credentials are wrong, you find out here rather than
-   in the middle of a mining run.
+   nothing else: it says which door it read through, lists the read-only tools
+   available and names any it withheld. If the credentials are wrong, you find
+   out here rather than in the middle of a mining run.
 2. Name the process (and optionally say what to look for — "the main path
    only", "show me where invoices get reworked").
 3. **Read & draw.** The model explores the tenant and comes back with steps.
@@ -213,14 +274,14 @@ account would be a credential-harvesting tool waiting for a prompt injection.
 ### What it cannot do yet
 
 Nothing here has been run against a live Celonis tenant — there were no
-credentials available when it was built. The OAuth flow, the MCP handshake, the
-tool-use loop, the read-only guard and the whole browser path are exercised
-end-to-end against a faithful stub (`npm run test:celonis`, 36 checks), but the
-**tool names and result shapes of a real Agent Tools asset have not been
-confirmed**. That is also why nothing in the code depends on them: the first
-run against a real tenant will discover whatever that tenant publishes. If it
-cannot read something, the panel and the evidence block will say which tool
-failed and why.
+credentials available when it was built. Both doors, the OAuth flow, the MCP
+handshake, the four-tool contract, the tool-use loop, the API's limits, the
+read-only guard and the whole browser path are exercised end-to-end against a
+faithful stub (`npm run test:celonis`, 60 checks), but the **tool names and
+result shapes of a real tenant have not been confirmed**. That is also why
+nothing in the code depends on them: the first run against a real tenant
+discovers whatever it publishes. If it cannot read something, the panel and the
+evidence block say which tool failed and why.
 
 ---
 

@@ -32,32 +32,36 @@ import {
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
-import {
-  CelonisNotConfigured, type Connected, callTool, connect, readConfig,
-} from './celonis.js';
+import { CelonisNotConfigured, readConfig } from './celonis.js';
+import { type Source, openSource } from './knowledge.js';
 
 const bedrock = new BedrockRuntimeClient({});
 
 /* ---------- the model's brief ---------------------------------------------- */
 
-const SYSTEM = `You are a process-mining analyst building a BPMN process definition from a Celonis tenant.
+const SYSTEM = `You are a process analyst building a BPMN process definition from what a Celonis tenant already knows about a process.
 
 You have read-only tools onto a Celonis team. You do not know in advance what they are called or what data they expose — that is the first thing to find out. Explore before you conclude.
 
+WHERE THE ANSWER COMES FROM
+The tenant has already modelled this process: a knowledge model names its records, its attributes and its KPIs, and its event data records what actually happened. Your job is to read that existing knowledge and render it as a process definition — not to invent a process that sounds plausible, and not to describe one from general knowledge of how such processes usually work.
+
 HOW TO WORK
-1. Start by listing what is available: data pools, data models, knowledge models, published views or whatever the tools expose. Do not guess an object name; read it.
+1. Start by reading what is there. If a tool returns the knowledge model (often called get_knowledge_model), call it first: it tells you the records, the attributes and the KPI ids this tenant actually has, with their real names. Otherwise list whatever the tools expose — data pools, data models, published views. Do not guess an object name; read it.
 2. Find the process the user asked about. If more than one candidate matches, pick the closest and say which one you chose in "notes".
-3. Read the real behaviour, not the documentation of it. What you want is:
+3. Read its behaviour. What you want is:
    - the ACTIVITIES that occur, with how often each occurs,
-   - the DIRECTLY-FOLLOWS relations between them (which activity leads to which), with frequencies,
-   - who or what performs each activity (a resource, user, role or department column),
+   - the ORDER they occur in — a directly-follows relation if the tenant exposes one, otherwise the activity and its timestamp or sequence number per case, which you can order yourself,
+   - who or what performs each activity (a resource, user, role or department attribute),
    - the systems involved if the data says so,
    - anything the data shows about rework, loops, long waits or deviations.
-4. Prefer the main path. A mined graph has a long tail of rare variants; a BPMN diagram that tries to draw all of them is useless. Keep the activities that cover the bulk of the cases and name the dropped tail in "notes".
+   Where the tools are the standard Celonis four, that is typically: get_knowledge_model to find the record and its attributes, search_metadata to locate the activity and resource columns by name, then load_data with those columns — e.g. columns=["<RECORD>.activity", "<a count KPI>"] for the activities, and the activity plus a timestamp for their order.
+4. Prefer the main path. A real process has a long tail of rare variants; a BPMN diagram that tries to draw all of them is useless. Keep the activities that cover the bulk of the cases and name the dropped tail in "notes".
 
 RULES ON EVIDENCE
 - Every activity you output must have come from a tool result. If you could not read the data, say so in "notes" and return the steps you do have — an empty list is a better answer than an invented process.
 - Never put a number in "frequency" that a tool did not give you. Copy the case or occurrence count you actually read, as a count ("12,480 cases") or leave it empty.
+- Use the tenant's own names. If its activity is called "Clear Invoice", the step is "Clear Invoice", not your tidier synonym — somebody has to recognise this diagram as their process.
 - If a tool errors, read the message and try a different tool or different arguments. Do not retry the identical call.
 
 OUTPUT
@@ -69,7 +73,7 @@ When you have what you need, reply with ONE JSON object and nothing else — no 
   "unsuccessful_outcome": "<how a case ends badly, or empty string>",
   "steps": [
     {
-      "activity": "<Verb Object, max 5 words — the mined activity name, tidied>",
+      "activity": "<the activity name as the tenant spells it, tidied only of noise>",
       "description": "<max 15 words, what happens here>",
       "participant": "<role/resource that performs it, max 4 words>",
       "it_systems": "<system name or empty>",
@@ -207,10 +211,10 @@ function toDiscovery(raw: Record<string, unknown>, fallbackName: string) {
   };
 }
 
-/** The discovered MCP tools, in Bedrock Converse's toolConfig shape. */
-function toolConfig(conn: Connected): { tools: Tool[] } {
+/** The source's tools, in Bedrock Converse's toolConfig shape. */
+function toolConfig(src: Source): { tools: Tool[] } {
   return {
-    tools: conn.tools.map((t): Tool.ToolSpecMember => ({
+    tools: src.tools.map((t): Tool.ToolSpecMember => ({
       toolSpec: {
         name: t.name,
         description: (t.description || t.name).slice(0, 900),
@@ -225,8 +229,7 @@ function toolConfig(conn: Connected): { tools: Tool[] } {
 type ToolCall = { tool: string; args: unknown; ok: boolean; chars: number; error?: string };
 
 /** Converse, with the Celonis tools, until the model stops asking for them. */
-async function runLoop(conn: Connected, cfg: Awaited<ReturnType<typeof readConfig>>,
-                       modelId: string, ask: string) {
+async function runLoop(src: Source, modelId: string, ask: string) {
   const messages: Message[] = [{ role: 'user', content: [{ text: ask }] }];
   const calls: ToolCall[] = [];
   let lastText = '';
@@ -236,7 +239,7 @@ async function runLoop(conn: Connected, cfg: Awaited<ReturnType<typeof readConfi
       modelId,
       system: [{ text: SYSTEM }],
       messages,
-      toolConfig: toolConfig(conn),
+      toolConfig: toolConfig(src),
       inferenceConfig: { maxTokens: 8000, temperature: 0 },
     }));
 
@@ -260,7 +263,7 @@ async function runLoop(conn: Connected, cfg: Awaited<ReturnType<typeof readConfi
       const name = use.name ?? '';
       const args = (use.input ?? {}) as Record<string, unknown>;
       try {
-        const text = await callTool(conn, cfg, name, args);
+        const text = await src.call(name, args);
         const clipped = text.length > MAX_TOOL_CHARS
           ? `${text.slice(0, MAX_TOOL_CHARS)}\n…[truncated, ${text.length} chars total]`
           : text;
@@ -330,6 +333,8 @@ export const handler = async (event: any) => {
   if (body.processName) detail.processName = String(body.processName).slice(0, 160);
   if (body.question) detail.questionChars = String(body.question).length;
   if (body.modelId) detail.modelId = String(body.modelId).slice(0, 160);
+  // Which door answered. Not the data — only which one.
+  const noteSource = (s: Source) => { detail.source = s.kind; };
 
   let who: Who;
   try {
@@ -344,17 +349,20 @@ export const handler = async (event: any) => {
     return reply(status, payload);
   };
 
-  let conn: Connected | null = null;
+  let src: Source | null = null;
   try {
     const cfg = await readConfig();
 
     if (path.endsWith('/celonis/status')) {
-      conn = await connect(cfg);
+      src = await openSource(cfg);
+      noteSource(src);
       return done(200, {
         connected: true,
         team: cfg.teamUrl,
-        tools: conn.tools.map((t) => ({ name: t.name, description: t.description })),
-        blocked: conn.blocked,
+        source: src.kind,
+        sourceLabel: src.label,
+        tools: src.tools.map((t) => ({ name: t.name, description: t.description })),
+        blocked: src.blocked,
       });
     }
 
@@ -368,16 +376,19 @@ export const handler = async (event: any) => {
       const modelId: string = body.modelId || process.env.MODEL_ID
         || 'us.anthropic.claude-opus-4-5-20251101-v1:0';
 
-      conn = await connect(cfg);
-      if (!conn.tools.length) {
+      src = await openSource(cfg);
+      noteSource(src);
+      if (!src.tools.length) {
         return done(
           502,
-          { error: 'The Celonis MCP server published no read-only tools'
-                   + (conn.blocked.length
-                      ? ` (${conn.blocked.length} were withheld as not read-only: `
-                        + `${conn.blocked.join(', ')}).`
+          { error: `${src.label} exposes no read-only tools`
+                   + (src.blocked.length
+                      ? ` (${src.blocked.length} were withheld as not read-only: `
+                        + `${src.blocked.join(', ')}).`
                       : '.')
-                   + ' Check which tools the Agent Tools asset exposes in Celonis Studio.' },
+                   + (src.kind === 'mcp'
+                      ? ' Check which tools the Agent Tools asset exposes in Celonis Studio.'
+                      : ' Check the blocked-tool-words parameter.') },
           'no usable tools',
         );
       }
@@ -389,7 +400,7 @@ export const handler = async (event: any) => {
         + 'return the JSON object.',
       ].filter(Boolean).join('\n');
 
-      const { text, calls, exhausted } = await runLoop(conn, cfg, modelId, ask);
+      const { text, calls, exhausted } = await runLoop(src, modelId, ask);
       if (!text) throw new Error('The model returned nothing after reading Celonis.');
 
       const { discovery, notes } = toDiscovery(extractJson(text), processName);
@@ -401,7 +412,9 @@ export const handler = async (event: any) => {
         discovery,
         notes,
         toolCalls: calls,
-        tools: conn.tools.map((t) => t.name),
+        source: src.kind,
+        sourceLabel: src.label,
+        tools: src.tools.map((t) => t.name),
       });
     }
 
@@ -416,8 +429,8 @@ export const handler = async (event: any) => {
     }
     return done(502, { error: msg }, msg);
   } finally {
-    if (conn) {
-      try { await conn.close(); } catch { /* the request is already answered */ }
+    if (src) {
+      try { await src.close(); } catch { /* the request is already answered */ }
     }
   }
 };

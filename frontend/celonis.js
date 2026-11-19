@@ -30,8 +30,12 @@ function renderTools(data) {
     return `<li><code>${esc(name)}</code>${desc ? ` — ${esc(desc.slice(0, 160))}` : ''}</li>`;
   });
   box.innerHTML = [
+    // Which door answered. A tenant can be read through its Agent Tools asset
+    // or through its Knowledge Model API, and the two do not see the same
+    // things — so "it connected" is only half the answer.
+    data.sourceLabel ? `<p class="muted">Read through: <strong>${esc(data.sourceLabel)}</strong></p>` : '',
     tools.length
-      ? `<p class="muted">${tools.length} read-only tool(s) published by this tenant:</p>
+      ? `<p class="muted">${tools.length} read-only tool(s) available:</p>
          <ul class="celonis-tools">${rows.join('')}</ul>`
       : '<p class="muted">This tenant published no read-only tools.</p>',
     blocked.length
@@ -78,7 +82,8 @@ function renderEvidence(data) {
   const failed = calls.filter((c) => !c.ok);
   const bits = [];
   if (used.length) {
-    bits.push(`<p><strong>Read from Celonis</strong> using ${esc(used.join(', '))}
+    bits.push(`<p><strong>Read from ${esc(data.sourceLabel || 'Celonis')}</strong>
+      using ${esc(used.join(', '))}
       — ${calls.filter((c) => c.ok).length} call(s).</p>`);
   }
   if (failed.length) {
